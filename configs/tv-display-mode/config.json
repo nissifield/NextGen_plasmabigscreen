@@ -1,0 +1,23 @@
+{
+  "output": "DP-1",
+  "mode_4k": {
+    "width": 3840,
+    "height": 2160,
+    "refresh_rate": 30.0
+  },
+  "mode_1080p": {
+    "width": 1920,
+    "height": 1080,
+    "refresh_rate": 60.0
+  },
+  "video_4k_min_width": 1921,
+  "video_4k_min_height": 1081,
+  "debounce_to_4k_sec": 1.5,
+  "debounce_to_1080p_sec": 2.0,
+  "min_switch_interval_sec": 1.5,
+  "poll_interval_sec": 3,
+  "auto_4k_video_switch": false,
+  "auto_pause_background_media": true,
+  "title_4k_heuristic": true,
+  "assume_4k_on_fullscreen_playback": []
+}

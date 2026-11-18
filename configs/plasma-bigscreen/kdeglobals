@@ -1,0 +1,5 @@
+[General]
+BrowserApplication=aura-browser
+
+[KDE]
+LookAndFeelPackage[$i]=org.kde.plasma.bigscreen

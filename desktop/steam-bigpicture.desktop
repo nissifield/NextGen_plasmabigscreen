@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Steam
+Comment=Launch Steam in 10-Foot Console & TV Mode
+Exec=/usr/bin/bazzite-steam steam://open/bigpicture
+Icon=steam
+Terminal=false
+Type=Application
+Categories=Game;Application;
+StartupNotify=true
+StartupWMClass=steam

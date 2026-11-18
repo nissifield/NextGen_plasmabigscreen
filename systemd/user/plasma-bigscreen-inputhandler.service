@@ -1,0 +1,11 @@
+[Unit]
+Description=KDE Plasma Bigscreen Controller (SDL3) & HDMI-CEC Input Handler
+After=plasma-kwin_wayland.service
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=PLASMA_PLATFORM=mediacenter
+ExecStart=/usr/bin/bwrap --dev-bind / / --dev-bind /dev/null /dev/cec0 /usr/bin/plasma-bigscreen-inputhandler --replace
+Restart=on-failure
+RestartSec=2

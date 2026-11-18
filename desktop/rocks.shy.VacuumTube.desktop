@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=YouTube TV
+Comment=Ad-Free YouTube Leanback TV Experience
+Exec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=startvacuumtube --file-forwarding rocks.shy.VacuumTube --fullscreen @@u %U @@
+Terminal=false
+Type=Application
+Icon=rocks.shy.VacuumTube
+StartupWMClass=VacuumTube
+Categories=AudioVideo;Video;TV;
+Keywords=YouTube;YT;TV;
+StartupNotify=true
+X-Flatpak=rocks.shy.VacuumTube

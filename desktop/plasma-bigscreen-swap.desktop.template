@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Plasma Bigscreen
+GenericName=TV & Bigscreen Shell
+Comment=Switch between KDE Desktop and Plasma Bigscreen TV UI
+Exec=@HOME@/.local/bin/tv-session-switch.sh toggle
+Icon=video-display
+Terminal=false
+Categories=AudioVideo;Utility;
+StartupNotify=false
+Keywords=tv;plasma;bigscreen;media;launcher;

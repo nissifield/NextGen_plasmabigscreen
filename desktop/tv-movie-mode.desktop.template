@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Movie Mode
+GenericName=4K Movie / 1080p Mode Toggle
+Comment=Toggle display output between Movie Mode (4K @ 30Hz) and 1080p Mode (1080p @ 60Hz)
+Exec=@HOME@/.local/bin/tv-movie-mode-toggle
+Icon=video-television
+Terminal=false
+Categories=AudioVideo;Video;
+StartupNotify=false
+Keywords=movie;4k;1080p;display;resolution;refresh;hdmi;tv;

@@ -1,0 +1,9 @@
+[CEC]
+ClaimActiveSource=false
+OSDName=Bigscreen TV
+
+[General]
+AutoSuppressInput=true
+CecEnabled=false
+Enabled=true
+GameControllerEnabled=true

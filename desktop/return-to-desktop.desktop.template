@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Desktop Mode
+GenericName=KDE Plasma Desktop
+Comment=Switch back to standard KDE Plasma Desktop Mode
+Exec=@HOME@/.local/bin/tv-session-switch.sh desktop
+Icon=user-desktop
+Terminal=false
+Categories=System;Utility;
+StartupNotify=false

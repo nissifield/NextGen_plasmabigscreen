@@ -1,0 +1,36 @@
+# Bazzite TV Audio Ergonomics:
+# Lock HDMI output (Beyond TV) at highest priority so USB remote receivers
+# or controllers never hijack default audio routing.
+monitor.alsa.rules = [
+  {
+    matches = [
+      {
+        node.name = "~alsa_output.pci-0000_00_1f.3.hdmi-.*"
+      }
+    ]
+    actions = {
+      update-props = {
+        priority.driver  = 2000
+        priority.session = 2000
+        node.pause-on-idle = false
+        session.suspend-timeout-seconds = 0
+      }
+    }
+  },
+  {
+    matches = [
+      {
+        node.name = "~alsa_input.usb-XING_WEI_2.4G_USB.*"
+      },
+      {
+        node.name = "~alsa_output.usb-XING_WEI_2.4G_USB.*"
+      }
+    ]
+    actions = {
+      update-props = {
+        priority.driver  = 50
+        priority.session = 50
+      }
+    }
+  }
+]

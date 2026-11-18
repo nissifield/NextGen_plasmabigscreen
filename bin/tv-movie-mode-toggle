@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Toggle DP-1 between Movie Mode (4K @ 30Hz) and 1080p Mode (1080p @ 60Hz) with Bigscreen UI feedback."""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+
+TV_DISPLAY_MODE = os.path.expanduser("~/.local/bin/tv-display-mode")
+if not os.path.exists(TV_DISPLAY_MODE):
+    TV_DISPLAY_MODE = shutil.which("tv-display-mode") or TV_DISPLAY_MODE
+ICON_NAME = "video-television"
+
+
+def toggle_display_mode() -> dict:
+    proc = subprocess.run(
+        [TV_DISPLAY_MODE, "toggle", "--json"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+    return json.loads(proc.stdout)
+
+
+def format_feedback(result: dict) -> tuple[str, str, str]:
+    dec = result.get("decision") or {}
+    disp = result.get("display") or {}
+    output = str(disp.get("output") or "DP-1")
+    target = str(dec.get("target") or result.get("manual_mode") or "1080p")
+    reason = str(dec.get("reason") or "")
+    if target == "4k":
+        return (
+            "Movie Mode: 4K @ 30Hz",
+            "Movie Mode",
+            f"{output} switched to 3840x2160 @ 30Hz",
+        )
+    if reason == "steam_priority":
+        return (
+            "1080p Mode (Steam Priority)",
+            "1080p Mode (Steam Priority)",
+            f"{output} stays at 1920x1080 @ 60Hz while Steam is active",
+        )
+    return (
+        "1080p Mode: 1080p @ 60Hz",
+        "1080p Mode",
+        f"{output} switched to 1920x1080 @ 60Hz",
+    )
+
+
+def show_plasma_osd(text: str) -> None:
+    try:
+        import dbus
+
+        bus = dbus.SessionBus()
+        obj = bus.get_object("org.kde.plasmashell", "/org/kde/osdService")
+        iface = dbus.Interface(obj, "org.kde.osdService")
+        iface.showText(ICON_NAME, text)
+    except Exception:
+        pass
+
+
+def show_brief_banner(title: str, subtitle: str, duration_ms: int = 1600) -> None:
+    """
+    Open and auto-close a brief Wayland window so Plasma Bigscreen's
+    StartupFeedbackWindow receives active=false and dismisses immediately.
+    """
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk, GLib, Gtk
+
+        css = Gtk.CssProvider()
+        css.load_from_data(
+            b"""
+            window.tv-toast {
+                background-color: rgba(20, 24, 31, 0.96);
+                border: 2px solid rgba(110, 175, 255, 0.75);
+                border-radius: 14px;
+            }
+            label.tv-title {
+                color: #ffffff;
+                font-size: 24px;
+                font-weight: bold;
+            }
+            label.tv-subtitle {
+                color: #c8d2e0;
+                font-size: 16px;
+            }
+            """
+        )
+        screen = Gdk.Screen.get_default()
+        if screen is not None:
+            Gtk.StyleContext.add_provider_for_screen(
+                screen, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
+
+        win = Gtk.Window(title=title)
+        win.get_style_context().add_class("tv-toast")
+        win.set_decorated(False)
+        win.set_resizable(False)
+        win.set_position(Gtk.WindowPosition.CENTER)
+        win.set_keep_above(True)
+        win.set_border_width(24)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
+        icon = Gtk.Image.new_from_icon_name(ICON_NAME, Gtk.IconSize.DIALOG)
+        box.pack_start(icon, False, False, 0)
+
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        lbl_title = Gtk.Label(label=title, xalign=0.0)
+        lbl_title.get_style_context().add_class("tv-title")
+        lbl_sub = Gtk.Label(label=subtitle, xalign=0.0)
+        lbl_sub.get_style_context().add_class("tv-subtitle")
+        text_box.pack_start(lbl_title, False, False, 0)
+        text_box.pack_start(lbl_sub, False, False, 0)
+        box.pack_start(text_box, True, True, 0)
+
+        win.add(box)
+        win.connect("destroy", Gtk.main_quit)
+        win.connect("key-press-event", lambda *_: Gtk.main_quit())
+        win.connect("button-press-event", lambda *_: Gtk.main_quit())
+        GLib.timeout_add(duration_ms, Gtk.main_quit)
+        win.show_all()
+        win.present()
+        Gtk.main()
+    except Exception:
+        pass
+
+
+def main() -> int:
+    no_gui = "--no-gui" in sys.argv[1:]
+    res = toggle_display_mode()
+    osd_text, title, subtitle = format_feedback(res)
+    print(f"{title}: {subtitle}")
+    show_plasma_osd(osd_text)
+    if not no_gui:
+        show_brief_banner(title, subtitle)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

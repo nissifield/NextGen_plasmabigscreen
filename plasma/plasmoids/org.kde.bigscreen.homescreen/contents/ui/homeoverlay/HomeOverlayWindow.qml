@@ -1,0 +1,190 @@
+// SPDX-FileCopyrightText: 2026 Devin Lin <devin@kde.org>
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Window
+import QtQuick.Templates as T
+import QtQuick.Controls as QQC2
+
+import org.kde.kirigami as Kirigami
+import org.kde.plasma.private.nanoshell as NanoShell
+import org.kde.private.biglauncher
+import org.kde.bigscreen as Bigscreen
+import org.kde.bigscreen.controllerhandler as ControllerHandler
+import org.kde.layershell as LayerShell
+
+Window {
+    id: window
+
+    LayerShell.Window.scope: "overlay"
+    LayerShell.Window.anchors: LayerShell.Window.AnchorTop | LayerShell.Window.AnchorLeft | LayerShell.Window.AnchorRight | LayerShell.Window.AnchorBottom
+    LayerShell.Window.layer: LayerShell.Window.LayerOverlay
+    LayerShell.Window.exclusionZone: -1
+
+    signal minimizeAllTasksRequested()
+    signal searchRequested()
+    signal settingsRequested()
+
+    property bool _pendingScreenshot: false
+
+    Kirigami.Theme.inherit: false
+    Kirigami.Theme.colorSet: Kirigami.Theme.View
+    flags: Qt.FramelessWindowHint
+    color: Qt.rgba(0, 0, 0, 0.3 * sidebar.openFactor)
+
+    function openTasks() {
+        tasksView.open();
+    }
+
+    function showOverlay() {
+        Bigscreen.NavigationRumble.playConfirmRumble();
+        showMaximized();
+    }
+
+    function hideOverlay() {
+        tasksView.visible = false;
+        Bigscreen.NavigationRumble.playCancelRumble();
+        sidebar.close();
+    }
+
+    onVisibleChanged: {
+        if (visible) {
+            sidebar.open()
+        } else {
+            tasksView.visible = false;
+            if (_pendingScreenshot) {
+                _pendingScreenshot = false;
+                screenshotTimer.start();
+            }
+        }
+    }
+    onActiveChanged: {
+        if (!active) {
+            sidebar.close();
+        }
+    }
+
+    Bigscreen.BackHandler.onActivated: {
+        if (tasksView.visible) {
+            tasksView.close();
+        } else {
+            sidebar.close();
+        }
+    }
+
+    Connections {
+        target: Shortcuts
+
+        function onToggleHomeOverlay() {
+            if (window.visible) {
+                sidebar.close();
+            } else {
+                window.showFullScreen();
+            }
+        }
+    }
+
+    // Delay to ensure the compositor has fully removed the overlay from the screen
+    Timer {
+        id: screenshotTimer
+        interval: 500
+        onTriggered: Bigscreen.Global.takeScreenshot()
+    }
+
+    // Fallback in case the sidebar somehow gets stuck
+    MouseArea {
+        anchors.fill: parent
+        onClicked: window.hideOverlay()
+    }
+
+    HomeOverlaySidebar {
+        id: sidebar
+
+        onAboutToHide: tasksView.close()
+        onClosed: window.close();
+
+        T.Overlay.modal: Rectangle {
+            color: Qt.rgba(Kirigami.Theme.backgroundColor.r, Kirigami.Theme.backgroundColor.g, Kirigami.Theme.backgroundColor.b, tasksView.visible ? (tasksView.opacity * 0.8) : 0)
+        }
+
+        contentItem: Item {
+            Keys.onPressed: (event) => {
+                if (event.key === Qt.Key_Backspace) {
+                    event.accepted = true;
+                    if (tasksView.visible) {
+                        tasksView.close();
+                    } else {
+                        sidebar.close();
+                    }
+                }
+            }
+
+            MainColumn {
+                id: mainColumn
+                showTasksButton: tasksView.taskCount > 0
+
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.left: parent.left
+                width: sidebar.sidebarWidth
+
+                Keys.onRightPressed: {
+                    if (tasksView.visible) {
+                        tasksView.forceActiveFocus();
+                    }
+                }
+
+                onMinimizeAllTasksRequested: {
+                    window.minimizeAllTasksRequested();
+                    window.hideOverlay();
+                }
+                onSearchRequested: {
+                    window.searchRequested();
+                    window.hideOverlay();
+                }
+                onTasksRequested: {
+                    tasksView.open();
+                    tasksView.forceActiveFocus();
+                }
+                onSettingsRequested: {
+                    window.settingsRequested();
+                    window.hideOverlay();
+                }
+                onCloseRequested: sidebar.close()
+                onScreenshotRequested: window._pendingScreenshot = true
+            }
+
+            MouseArea {
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.left: mainColumn.right
+                anchors.right: parent.right
+                onClicked: window.hideOverlay()
+            }
+
+            TasksView {
+                id: tasksView
+
+                visible: false
+
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.left: mainColumn.right
+                anchors.right: parent.right
+
+                onFocusTasksRequested: {
+                    mainColumn.focusTasks();
+                }
+
+                onVisibleChanged: {
+                    if (!visible) {
+                        mainColumn.focusTasks();
+                    }
+                }
+
+                onCloseHomeRequested: window.hideOverlay();
+            }
+        }
+    }
+}

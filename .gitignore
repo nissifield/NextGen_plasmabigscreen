@@ -1,0 +1,24 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Compiled binaries / shims (built locally by install.sh)
+*.so
+*.o
+*.dylib
+
+# Backups, temporary files, and editor state
+*.bak
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Personal / machine-local runtime data (never commit)
+localstorage.sqlite3*
+profiles.json
+.tv-setup-backups/
+cache/

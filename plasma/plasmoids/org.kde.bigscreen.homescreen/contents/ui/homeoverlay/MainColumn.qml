@@ -1,0 +1,260 @@
+// SPDX-FileCopyrightText: 2026 Devin Lin <devin@kde.org>
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls as QQC2
+
+import org.kde.kirigami as Kirigami
+import org.kde.plasma.plasma5support as P5Support
+import org.kde.private.biglauncher
+import org.kde.bigscreen as Bigscreen
+import org.kde.bigscreen.controllerhandler as ControllerHandler
+import org.kde.plasma.workspace.keyboardlayout as Keyboards
+import org.kde.plasma.clock
+
+ColumnLayout {
+    id: root
+
+    property bool showTasksButton
+
+    property string timeString
+    property string dateString
+    property var locale: Qt.locale()
+
+    signal minimizeAllTasksRequested()
+    signal searchRequested()
+    signal tasksRequested()
+    signal settingsRequested()
+
+    signal closeRequested()
+    signal screenshotRequested()
+
+    function focusTasks() {
+        tasksButton.forceActiveFocus();
+    }
+
+    onVisibleChanged: {
+        if (visible) {
+            homeButton.forceActiveFocus();
+
+            // Don't have controller input suppressed while the home overlay is open, so user can interact
+            ControllerHandler.ControllerHandlerStatus.beginIgnoreSuppression();
+        } else {
+            ControllerHandler.ControllerHandlerStatus.endIgnoreSuppression();
+        }
+    }
+
+    spacing: 0
+
+    Kirigami.Theme.inherit: false
+    Kirigami.Theme.colorSet: Kirigami.Theme.Button
+
+    Clock {
+        id: clock
+        trackSeconds: false
+    }
+
+    function updateClock ()
+    {
+        // Time only, locale-aware (24h vs am/pm, separators, etc.)
+        timeString = locale.toString(
+            clock.dateTime,
+            locale.timeFormat(Locale.ShortFormat)
+        )
+
+        // Date only, long form, fully translated
+        dateString = locale.toString(
+            clock.dateTime,
+            locale.dateFormat(Locale.LongFormat)
+        )
+    }
+
+    Component.onCompleted: updateClock();
+
+    // update clock when libclock ticks
+    Connections {
+        target: clock
+        function onDateTimeChanged() {
+            updateClock();
+        }
+    }
+
+    // update locale if needed
+    Connections {
+        target: Qt.application
+        ignoreUnknownSignals: true
+        function onLocaleChanged() {
+            locale = Qt.locale();
+            updateClock();
+        }
+    }
+
+
+    QQC2.Control {
+        id: headerControl
+        topPadding: Kirigami.Units.gridUnit
+        bottomPadding: Kirigami.Units.smallSpacing
+        leftPadding: Kirigami.Units.gridUnit
+        rightPadding: Kirigami.Units.gridUnit
+
+        Layout.fillWidth: true
+
+        background: Rectangle {
+            color: Kirigami.Theme.alternateBackgroundColor
+
+            topLeftRadius: Kirigami.Units.cornerRadius
+            topRightRadius: Kirigami.Units.cornerRadius
+            bottomLeftRadius: 0
+            bottomRightRadius: 0
+        }
+
+        contentItem: ColumnLayout {
+            QQC2.Label {
+                id: timeLabel
+                text: timeString
+
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                font.pixelSize: 32
+                font.weight: Font.Light
+            }
+
+            QQC2.Label {
+                id: dateLabel
+                text: dateString
+
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                font.pixelSize: Bigscreen.Units.defaultFontPixelSize
+                font.weight: Font.Light
+            }
+
+            ColumnActionsRow {
+                id: actionsRow
+                onCloseRequested: root.closeRequested()
+                onScreenshotRequested: root.screenshotRequested()
+
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.largeSpacing
+
+                KeyNavigation.down: homeButton
+            }
+        }
+    }
+
+    QQC2.Control {
+        id: contentControl
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+
+        topPadding: Kirigami.Units.gridUnit
+        bottomPadding: Kirigami.Units.gridUnit
+        leftPadding: Kirigami.Units.gridUnit
+        rightPadding: Kirigami.Units.gridUnit
+
+        contentItem: ColumnLayout {
+            spacing: 0
+
+            Bigscreen.ButtonDelegate {
+                id: homeButton
+                Layout.fillWidth: true
+
+                KeyNavigation.up: actionsRow
+                KeyNavigation.down: searchButton
+
+                text: i18n("Home")
+                icon.name: "go-home-symbolic"
+                onClicked: {
+                    root.minimizeAllTasksRequested();
+                }
+            }
+
+            Bigscreen.ButtonDelegate {
+                id: searchButton
+                Layout.fillWidth: true
+
+                KeyNavigation.down: tasksButton.downItem
+
+                text: i18n("Search")
+                icon.name: "system-search-symbolic"
+                onClicked: {
+                    root.searchRequested();
+                }
+            }
+
+            Bigscreen.ButtonDelegate {
+                id: tasksButton
+                Layout.fillWidth: true
+
+                property Item downItem: visible ? tasksButton : controllerButton.downItem
+                property Item upItem: visible ? tasksButton : searchButton
+                KeyNavigation.down: controllerButton.downItem
+                KeyNavigation.up: searchButton
+
+                visible: showTasksButton
+                text: i18nc("@action:button Opens an overview of all currently running apps", "Tasks")
+                icon.name: "transform-shear-up"
+
+                onClicked: {
+                    root.tasksRequested();
+                }
+            }
+
+            Item { Layout.fillHeight: true }
+
+            Bigscreen.SwitchDelegate {
+                id: controllerButton
+                Layout.fillWidth: true
+
+                property Item downItem: visible ? controllerButton : keyboardButton
+                property Item upItem: visible ? controllerButton : tasksButton.upItem
+                KeyNavigation.up: tasksButton.upItem
+                KeyNavigation.down: keyboardButton.downItem
+
+                visible: ControllerHandler.ControllerHandlerStatus.sdlControllerConnected
+                    && ControllerHandler.ControllerHandlerStatus.enabled
+                    && ControllerHandler.ControllerHandlerStatus.gameControllerEnabled
+                icon.name: "input-gamepad-symbolic"
+                text: i18n("Controller")
+                description: checked ? i18n("Currently capturing keys…") : i18n("Key capture off")
+
+                checked: !ControllerHandler.ControllerHandlerStatus.inputManuallySuppressed
+                // Takes effect when the overlay stops ignoring suppression on close.
+                onToggled: ControllerHandler.ControllerHandlerStatus.inputSuppressed = !checked
+            }
+
+            Bigscreen.SwitchDelegate {
+                id: keyboardButton
+                Layout.fillWidth: true
+
+                property Item downItem: visible ? keyboardButton : settingsButton
+                property Item upItem: visible ? keyboardButton : controllerButton.upItem
+                KeyNavigation.up: controllerButton.upItem
+                KeyNavigation.down: settingsButton
+
+                visible: Keyboards.KWinVirtualKeyboard.available
+                icon.name: "input-keyboard-virtual-symbolic"
+                text: i18n("On-screen Keyboard")
+
+                checked: Boolean(Keyboards.KWinVirtualKeyboard.enabled)
+                onCheckedChanged: {
+                    Keyboards.KWinVirtualKeyboard.enabled = checked;
+                    checked = Qt.binding(() => Boolean(Keyboards.KWinVirtualKeyboard.enabled));
+                }
+            }
+
+            Bigscreen.ButtonDelegate {
+                id: settingsButton
+                Layout.fillWidth: true
+                KeyNavigation.up: keyboardButton.upItem
+
+                text: i18n("Settings")
+                icon.name: "settings-configure-symbolic"
+                onClicked: {
+                    root.settingsRequested();
+                }
+            }
+        }
+    }
+}

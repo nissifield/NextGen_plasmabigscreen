@@ -1,0 +1,1801 @@
+#!/usr/bin/env python3
+"""
+Automatic & manual DP-1 display mode switcher for Bazzite / KDE Plasma 6 Wayland HTPC.
+
+Policy:
+1. Steam focused/active or fullscreen foreground -> ALWAYS 1920x1080@60.00 (highest priority).
+2. Active >1080p (4K) video playback -> 3840x2160@30.00 (EDID preferred mode).
+3. Otherwise -> 1920x1080@60.00.
+4. Debounced transitions prevent mode-switching flicker, and redundant kscreen-doctor calls are skipped.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+from dataclasses import dataclass, field
+import glob
+import json
+import logging
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from typing import Any, Callable
+from urllib.parse import unquote, urlparse
+
+BUS_NAME = "org.nextgen.TvDisplayMode"
+BUS_PATH = "/org/nextgen/TvDisplayMode"
+BUS_IFACE = "org.nextgen.TvDisplayMode"
+KWIN_SCRIPT_NAME = "tv-display-mode"
+
+HOME_DIR = os.path.expanduser("~")
+CONFIG_PATH = os.path.join(HOME_DIR, ".config", "tv-display-mode", "config.json")
+STATE_DIR = os.path.join(HOME_DIR, ".local", "state", "tv-display-mode")
+JELLYFIN_DATA_DIR = os.path.join(
+    HOME_DIR, ".var", "app", "org.jellyfin.JellyfinDesktop", "data", "jellyfin-desktop"
+)
+JELLYFIN_STATE_DIR = os.path.join(JELLYFIN_DATA_DIR, "tv-display-mode")
+STREMIO_STATE_DIR = os.path.join(
+    HOME_DIR, ".var", "app", "com.stremio.Stremio", "data", "stremio", "tv-display-mode"
+)
+KWIN_SCRIPT_PATH = os.path.join(
+    HOME_DIR, ".local", "share", "tv-display-mode", "kwin", "tv-display-mode.js"
+)
+MANUAL_STATE_PATH = os.path.join(STATE_DIR, "manual-override.json")
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "output": "DP-1",
+    "mode_4k": {"width": 3840, "height": 2160, "refresh_rate": 30.0},
+    "mode_1080p": {"width": 1920, "height": 1080, "refresh_rate": 60.0},
+    "video_4k_min_width": 1921,
+    "video_4k_min_height": 1081,
+    "debounce_to_4k_sec": 1.5,
+    "debounce_to_1080p_sec": 2.0,
+    "min_switch_interval_sec": 1.5,
+    "poll_interval_sec": 3,
+    "auto_4k_video_switch": False,
+    "auto_pause_background_media": True,
+    "title_4k_heuristic": True,
+    "assume_4k_on_fullscreen_playback": [],
+}
+
+VIDEO_EXTENSIONS = (
+    ".mkv",
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".webm",
+    ".ts",
+    ".m2ts",
+    ".m4v",
+    ".mpg",
+    ".mpeg",
+    ".flv",
+    ".wmv",
+    ".ogv",
+)
+
+FOUR_K_HINT_RE = re.compile(
+    r"(?<![0-9a-zA-Z])(2160p|4k|uhd|3840x2160|4096x2160)(?![0-9a-zA-Z])",
+    re.IGNORECASE,
+)
+VIDEO_SOURCE_RE = re.compile(
+    r"(?:libmpv_render:\s*Video source:|vo/libmpv:\s*reconfig to)\s*(\d+)x(\d+)"
+)
+STEAM_TOKEN_RE = re.compile(
+    r"^(?:steam|steamwebhelper|steam\.exe|steam-bigpicture|bazzite-steam|steam_app_\d+|steamos-gamepadui)$",
+    re.IGNORECASE,
+)
+
+LOGGER = logging.getLogger("tv-display-mode")
+
+
+def load_config(path: str = CONFIG_PATH) -> dict[str, Any]:
+    """Load user configuration merged over defaults."""
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            user_cfg = json.load(fh)
+        if isinstance(user_cfg, dict):
+            for key, val in user_cfg.items():
+                if isinstance(val, dict) and isinstance(cfg.get(key), dict):
+                    cfg[key].update(val)
+                else:
+                    cfg[key] = val
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        LOGGER.warning("Failed to parse %s, using defaults: %s", path, exc)
+    return cfg
+
+
+def resolve_session_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Ensure HOME, XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS, and WAYLAND_DISPLAY are populated."""
+    import pwd
+
+    env = dict(base_env if base_env is not None else os.environ)
+    uid = os.getuid()
+    if not env.get("HOME"):
+        try:
+            env["HOME"] = pwd.getpwuid(uid).pw_dir
+        except KeyError:
+            env["HOME"] = HOME_DIR
+    runtime_dir = env.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
+    env["XDG_RUNTIME_DIR"] = runtime_dir
+
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        bus_sock = os.path.join(runtime_dir, "bus")
+        if os.path.exists(bus_sock):
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_sock}"
+
+    wayland_disp = env.get("WAYLAND_DISPLAY", "")
+    if not wayland_disp or not os.path.exists(os.path.join(runtime_dir, wayland_disp)):
+        candidates = sorted(
+            p
+            for p in glob.glob(os.path.join(runtime_dir, "wayland-*"))
+            if not p.endswith(".lock")
+        )
+        # Prefer wayland-1 then wayland-0 if both exist
+        names = [os.path.basename(p) for p in candidates]
+        if "wayland-1" in names:
+            env["WAYLAND_DISPLAY"] = "wayland-1"
+        elif "wayland-0" in names:
+            env["WAYLAND_DISPLAY"] = "wayland-0"
+        elif names:
+            env["WAYLAND_DISPLAY"] = names[0]
+        elif not wayland_disp:
+            env["WAYLAND_DISPLAY"] = "wayland-1"
+
+    return env
+
+
+def apply_session_env() -> dict[str, str]:
+    """Resolve session environment variables and update `os.environ` in-place."""
+    env = resolve_session_env(os.environ)
+    os.environ.update(env)
+    return env
+
+
+def _mode_score(
+    mode: dict[str, Any], target_w: int, target_h: int, target_hz: float, preferred_ids: set[str]
+) -> tuple[int, float, int] | None:
+    size = mode.get("size") or {}
+    w = int(size.get("width", 0))
+    h = int(size.get("height", 0))
+    if w != target_w or h != target_h:
+        return None
+    hz = float(mode.get("refreshRate", 0.0))
+    mid = str(mode.get("id", ""))
+    pref_rank = 0 if mid in preferred_ids else 1
+    hz_diff = abs(hz - target_hz)
+    try:
+        numeric_id = int(mid)
+    except ValueError:
+        numeric_id = 999999
+    return (pref_rank, round(hz_diff, 4), numeric_id)
+
+
+def parse_kscreen_json(
+    raw_json: str, output_name: str, cfg: dict[str, Any]
+) -> dict[str, Any]:
+    """Parse `kscreen-doctor -j` output and resolve target mode IDs for `output_name`."""
+    data = json.loads(raw_json)
+    outputs = data.get("outputs") or []
+    target_out = None
+    for out in outputs:
+        if out.get("name") == output_name:
+            target_out = out
+            break
+    if target_out is None:
+        raise RuntimeError(f"Output {output_name!r} not found in kscreen-doctor -j")
+
+    modes = target_out.get("modes") or []
+    preferred_ids = {str(x) for x in (target_out.get("preferredModes") or [])}
+    current_id = str(target_out.get("currentModeId", ""))
+    current_mode = None
+    for m in modes:
+        if str(m.get("id", "")) == current_id:
+            current_mode = m
+            break
+
+    m4k_cfg = cfg["mode_4k"]
+    m1080_cfg = cfg["mode_1080p"]
+
+    best_4k = None
+    best_4k_score = None
+    best_1080 = None
+    best_1080_score = None
+
+    for m in modes:
+        s4 = _mode_score(
+            m,
+            int(m4k_cfg["width"]),
+            int(m4k_cfg["height"]),
+            float(m4k_cfg["refresh_rate"]),
+            preferred_ids,
+        )
+        if s4 is not None and (best_4k_score is None or s4 < best_4k_score):
+            best_4k_score = s4
+            best_4k = m
+
+        # For 1080p@60, prefer lowest refresh diff then lowest numeric mode ID
+        s1080 = _mode_score(
+            m,
+            int(m1080_cfg["width"]),
+            int(m1080_cfg["height"]),
+            float(m1080_cfg["refresh_rate"]),
+            set(),
+        )
+        if s1080 is not None and (best_1080_score is None or s1080 < best_1080_score):
+            best_1080_score = s1080
+            best_1080 = m
+
+    if best_4k is None:
+        raise RuntimeError(f"4K mode not found on {output_name}")
+    if best_1080 is None:
+        raise RuntimeError(f"1080p@60 mode not found on {output_name}")
+
+    return {
+        "output": output_name,
+        "enabled": bool(target_out.get("enabled", True)),
+        "connected": bool(target_out.get("connected", True)),
+        "current_mode_id": current_id,
+        "current_mode": current_mode,
+        "mode_4k": best_4k,
+        "mode_1080p": best_1080,
+    }
+
+
+def query_kscreen(output_name: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    """Run `kscreen-doctor -j` and return parsed output & resolved target mode info."""
+    env = resolve_session_env()
+    res = subprocess.run(
+        ["/usr/bin/kscreen-doctor", "-j"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"kscreen-doctor -j failed ({res.returncode}): {res.stderr.strip()}"
+        )
+    return parse_kscreen_json(res.stdout, output_name, cfg)
+
+
+def is_already_target_mode(
+    kscreen_info: dict[str, Any], target: str, cfg: dict[str, Any]
+) -> bool:
+    """Return True if output is already running the requested mode (avoids redundant calls)."""
+    current_id = str(kscreen_info.get("current_mode_id", ""))
+    current = kscreen_info.get("current_mode")
+    if target == "4k":
+        target_mode = kscreen_info["mode_4k"]
+        if current_id == str(target_mode.get("id", "")):
+            return True
+        if current:
+            sz = current.get("size") or {}
+            return (
+                int(sz.get("width", 0)) == int(cfg["mode_4k"]["width"])
+                and int(sz.get("height", 0)) == int(cfg["mode_4k"]["height"])
+                and abs(float(current.get("refreshRate", 0.0)) - float(cfg["mode_4k"]["refresh_rate"]))
+                <= 0.15
+            )
+        return False
+
+    if target == "1080p":
+        target_mode = kscreen_info["mode_1080p"]
+        if current_id == str(target_mode.get("id", "")):
+            return True
+        if current:
+            sz = current.get("size") or {}
+            return (
+                int(sz.get("width", 0)) == int(cfg["mode_1080p"]["width"])
+                and int(sz.get("height", 0)) == int(cfg["mode_1080p"]["height"])
+                and abs(float(current.get("refreshRate", 0.0)) - float(cfg["mode_1080p"]["refresh_rate"]))
+                <= 0.15
+            )
+        return False
+
+    raise ValueError(f"Unknown target mode: {target!r}")
+
+
+def apply_display_mode(
+    target: str,
+    cfg: dict[str, Any],
+    dry_run: bool = False,
+    kscreen_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Switch DP-1 to `target` ('4k' or '1080p') unless already active."""
+    output_name = str(cfg["output"])
+    info = kscreen_info if kscreen_info is not None else query_kscreen(output_name, cfg)
+    target_mode = info["mode_4k"] if target == "4k" else info["mode_1080p"]
+    target_id = str(target_mode["id"])
+
+    if is_already_target_mode(info, target, cfg):
+        return {
+            "changed": False,
+            "target": target,
+            "mode_id": info["current_mode_id"],
+            "mode_name": (info.get("current_mode") or {}).get("name", ""),
+            "dry_run": dry_run,
+        }
+
+    cmd = ["/usr/bin/kscreen-doctor", f"output.{output_name}.mode.{target_id}"]
+    if dry_run:
+        return {
+            "changed": True,
+            "target": target,
+            "mode_id": target_id,
+            "mode_name": target_mode.get("name", ""),
+            "command": " ".join(cmd),
+            "dry_run": True,
+        }
+
+    env = resolve_session_env()
+    res = subprocess.run(
+        cmd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=8,
+        check=False,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"Failed applying mode {target_id} on {output_name}: {res.stderr.strip()}"
+        )
+    LOGGER.info(
+        "Switched %s to %s (mode id=%s, name=%s)",
+        output_name,
+        target,
+        target_id,
+        target_mode.get("name", ""),
+    )
+    return {
+        "changed": True,
+        "target": target,
+        "mode_id": target_id,
+        "mode_name": target_mode.get("name", ""),
+        "dry_run": False,
+    }
+
+
+def get_pid_ancestry(pid: int, max_depth: int = 16) -> list[dict[str, Any]]:
+    """Return process chain from `pid` upward using /proc/<pid>/{stat,comm,cmdline}."""
+    chain: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    cur = int(pid or 0)
+    for _ in range(max_depth):
+        if cur <= 1 or cur in seen:
+            break
+        seen.add(cur)
+        stat_path = f"/proc/{cur}/stat"
+        if not os.path.exists(stat_path):
+            break
+        ppid = 0
+        comm = ""
+        cmdline = ""
+        try:
+            with open(stat_path, "r", encoding="utf-8", errors="replace") as fh:
+                raw = fh.read()
+            rparen = raw.rfind(")")
+            if rparen != -1:
+                lparen = raw.find("(")
+                if lparen != -1:
+                    comm = raw[lparen + 1 : rparen]
+                rest = raw[rparen + 2 :].split()
+                if len(rest) >= 2:
+                    ppid = int(rest[1])
+        except OSError:
+            break
+        try:
+            with open(f"/proc/{cur}/cmdline", "rb") as fh:
+                cmdline = fh.read().replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+        except OSError:
+            pass
+        chain.append({"pid": cur, "ppid": ppid, "comm": comm, "cmdline": cmdline})
+        cur = ppid
+    return chain
+
+
+def _is_steam_ancestry_entry(entry: dict[str, Any]) -> bool:
+    comm = (entry.get("comm") or "").lower()
+    cmdline = (entry.get("cmdline") or "").lower()
+    if comm in {"steam", "steamwebhelper", "bazzite-steam", "reaper", "steam-runtime"}:
+        return True
+    if "steam.sh" in cmdline or "/steamrt64/steam" in cmdline or "/.local/share/steam/" in cmdline:
+        return True
+    if "steam_app_" in cmdline or "steamos-gamepadui" in cmdline:
+        return True
+    return False
+
+
+def is_steam_window(
+    win: dict[str, Any] | None,
+    pid_ancestry_fn: Callable[[int], list[dict[str, Any]]] = get_pid_ancestry,
+) -> bool:
+    """Return True if `win` belongs to Steam UI, Steam Big Picture, or a Steam-launched game."""
+    if not win:
+        return False
+    tokens = [
+        str(win.get("resourceClass") or "").strip(),
+        str(win.get("resourceName") or "").strip(),
+        str(win.get("desktopFileName") or "").strip(),
+    ]
+    for tok in tokens:
+        if not tok:
+            continue
+        low = tok.lower()
+        if low.endswith(".desktop"):
+            low = low[:-8]
+        if STEAM_TOKEN_RE.match(low) or low.startswith("steam_app_"):
+            return True
+
+    pid = int(win.get("pid") or 0)
+    if pid > 1:
+        for entry in pid_ancestry_fn(pid):
+            if _is_steam_ancestry_entry(entry):
+                return True
+
+    caption = str(win.get("caption") or "").strip().lower()
+    if caption in {"steam", "steam big picture mode"} and any(
+        "steam" in t.lower() for t in tokens if t
+    ):
+        return True
+    return False
+
+
+def steam_is_active_or_foreground(
+    kwin_state: dict[str, Any] | None,
+    pid_ancestry_fn: Callable[[int], list[dict[str, Any]]] = get_pid_ancestry,
+) -> tuple[bool, str]:
+    """Check if Steam is currently active/focused or occupying the foreground fullscreen."""
+    if not kwin_state:
+        return False, ""
+    active = kwin_state.get("active")
+    if active and not active.get("minimized", False):
+        if is_steam_window(active, pid_ancestry_fn):
+            return True, f"active:{active.get('resourceClass') or active.get('caption') or 'steam'}"
+
+    for win in kwin_state.get("windows") or []:
+        if win.get("minimized", False):
+            continue
+        if win.get("fullScreen", False) and is_steam_window(win, pid_ancestry_fn):
+            return True, f"fullscreen:{win.get('resourceClass') or win.get('caption') or 'steam'}"
+
+    return False, ""
+
+
+def is_4k_resolution(width: int, height: int, cfg: dict[str, Any]) -> bool:
+    """Return True when video dimensions exceed 1080p (requiring 4K mode)."""
+    return width >= int(cfg["video_4k_min_width"]) or height >= int(cfg["video_4k_min_height"])
+
+
+def text_indicates_4k(text: str) -> bool:
+    """Return True if a media title/URL explicitly indicates 4K / 2160p playback."""
+    if not text:
+        return False
+    return bool(FOUR_K_HINT_RE.search(text))
+
+
+@dataclass
+class PlaybackInfo:
+    player: str
+    status: str  # Playing / Paused / Stopped
+    width: int = 0
+    height: int = 0
+    title: str = ""
+    source: str = ""
+    requires_4k: bool = False
+    fullscreen: bool = False
+    pid: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+class FFprobeCache:
+    """Caches video dimensions for local file paths keyed by (path, mtime_ns, size)."""
+
+    def __init__(self) -> None:
+        self._cache: dict[str, tuple[int, int, int, int]] = {}
+
+    def probe(self, path: str) -> tuple[int, int]:
+        if not path or not os.path.isfile(path):
+            return (0, 0)
+        try:
+            st = os.stat(path)
+        except OSError:
+            return (0, 0)
+        cached = self._cache.get(path)
+        if cached and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+            return (cached[2], cached[3])
+        try:
+            res = subprocess.run(
+                [
+                    "/usr/bin/ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height",
+                    "-of",
+                    "json",
+                    path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout:
+                data = json.loads(res.stdout)
+                streams = data.get("streams") or []
+                if streams:
+                    w = int(streams[0].get("width") or 0)
+                    h = int(streams[0].get("height") or 0)
+                    self._cache[path] = (st.st_mtime_ns, st.st_size, w, h)
+                    return (w, h)
+        except Exception:
+            pass
+        return (0, 0)
+
+
+def get_running_flatpak_apps() -> set[str]:
+    """Return set of currently running Flatpak application IDs (lowercased)."""
+    try:
+        res = subprocess.run(
+            ["/usr/bin/flatpak", "ps", "--columns=application"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        if res.returncode == 0:
+            return {line.strip().lower() for line in res.stdout.splitlines() if line.strip()}
+    except Exception:
+        pass
+    return set()
+
+
+def read_mpv_lua_states(
+    state_dirs: list[str] | None = None,
+    pid_alive_fn: Callable[[int], bool] | None = None,
+    running_flatpaks_fn: Callable[[], set[str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Read live state JSONs written by mpv Lua hook, validating host PIDs and Flatpak apps."""
+    dirs = (
+        state_dirs
+        if state_dirs is not None
+        else [STATE_DIR, JELLYFIN_STATE_DIR, STREMIO_STATE_DIR]
+    )
+    alive_fn = pid_alive_fn if pid_alive_fn is not None else (lambda p: os.path.exists(f"/proc/{p}"))
+    flatpak_fn = running_flatpaks_fn if running_flatpaks_fn is not None else get_running_flatpak_apps
+    running_flatpaks: set[str] | None = None
+    states: list[dict[str, Any]] = []
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        for path in glob.glob(os.path.join(d, "mpv-*.json")):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                pid = int(data.get("pid") or 0)
+                flatpak_id = str(data.get("flatpak_id") or "").strip().lower()
+                if flatpak_id:
+                    # Flatpak processes run in private PID namespaces (e.g. pid=2), so validate via flatpak ps.
+                    if running_flatpaks is None:
+                        running_flatpaks = flatpak_fn()
+                    is_alive = flatpak_id in running_flatpaks
+                else:
+                    is_alive = pid > 0 and alive_fn(pid)
+
+                if not is_alive:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    continue
+                states.append(data)
+            except Exception:
+                continue
+    return states
+
+
+def parse_jellyfin_log_resolution(log_paths: list[str] | None = None) -> tuple[int, int]:
+    """Extract the most recent video source resolution from Jellyfin Desktop logs."""
+    paths = (
+        log_paths
+        if log_paths is not None
+        else glob.glob(os.path.join(JELLYFIN_DATA_DIR, "profiles", "*", "logs", "jellyfin-desktop.log"))
+    )
+    if not paths:
+        return (0, 0)
+    newest = max(paths, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
+    try:
+        with open(newest, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 65536))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return (0, 0)
+
+    matches = VIDEO_SOURCE_RE.findall(tail)
+    if not matches:
+        return (0, 0)
+    w, h = matches[-1]
+    return (int(w), int(h))
+
+
+def find_open_video_files_for_pid(root_pid: int) -> list[str]:
+    """Scan /proc/<pid>/fd (and immediate child PIDs) for open video files."""
+    if root_pid <= 1:
+        return []
+    pids = [root_pid]
+    try:
+        with open(f"/proc/{root_pid}/task/{root_pid}/children", "r", encoding="utf-8") as fh:
+            for tok in fh.read().split():
+                if tok.isdigit():
+                    pids.append(int(tok))
+    except OSError:
+        pass
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for pid in pids:
+        fd_dir = f"/proc/{pid}/fd"
+        if not os.path.isdir(fd_dir):
+            continue
+        try:
+            entries = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                target = os.readlink(os.path.join(fd_dir, entry))
+            except OSError:
+                continue
+            low = target.lower()
+            if low.endswith(VIDEO_EXTENSIONS) and os.path.isfile(target) and target not in seen:
+                seen.add(target)
+                found.append(target)
+    return found
+
+
+def _match_window_for_player(
+    kwin_state: dict[str, Any] | None, bus_name: str, pid: int
+) -> dict[str, Any] | None:
+    if not kwin_state:
+        return None
+    windows = kwin_state.get("windows") or []
+    if pid > 1:
+        for w in windows:
+            if int(w.get("pid") or 0) == pid:
+                return w
+    low_bus = bus_name.lower()
+    hints = []
+    if "jellyfin" in low_bus:
+        hints = ["jellyfin"]
+    elif "haruna" in low_bus:
+        hints = ["haruna"]
+    elif "stremio" in low_bus:
+        hints = ["stremio"]
+    elif "firefox" in low_bus:
+        hints = ["firefox"]
+    elif "chromium" in low_bus:
+        hints = ["vacuumtube", "chromium", "chrome"]
+    for w in windows:
+        blob = " ".join(
+            [
+                str(w.get("resourceClass") or ""),
+                str(w.get("resourceName") or ""),
+                str(w.get("desktopFileName") or ""),
+            ]
+        ).lower()
+        if any(h in blob for h in hints):
+            return w
+    return None
+
+
+def resolve_mpris_playback(
+    name: str,
+    status: str,
+    metadata: dict[str, Any],
+    pid: int,
+    kwin_state: dict[str, Any] | None,
+    cfg: dict[str, Any],
+    ffprobe_cache: FFprobeCache,
+    mpv_states: list[dict[str, Any]],
+    jellyfin_log_fn: Callable[[], tuple[int, int]] = parse_jellyfin_log_resolution,
+    open_files_fn: Callable[[int], list[str]] = find_open_video_files_for_pid,
+) -> PlaybackInfo:
+    """Resolve video dimensions and 4K requirement for a single MPRIS player."""
+    assume_4k_apps = {str(x).lower() for x in (cfg.get("assume_4k_on_fullscreen_playback") or [])}
+    title = str(metadata.get("xesam:title") or "")
+    url = str(metadata.get("xesam:url") or "")
+    length = int(metadata.get("mpris:length") or 0)
+    win = _match_window_for_player(kwin_state, name, pid)
+    fullscreen = bool(win.get("fullScreen", False)) if win else False
+    caption = str(win.get("caption") or "") if win else ""
+
+    info = PlaybackInfo(
+        player=name,
+        status=status,
+        title=title or caption,
+        fullscreen=fullscreen,
+        pid=pid,
+    )
+
+    if status != "Playing":
+        return info
+
+    low_name = name.lower()
+
+    # 1. Check matching mpv Lua/shim state first (if applicable)
+    for st in mpv_states:
+        st_flatpak = str(st.get("flatpak_id") or "").lower()
+        if (
+            (not st_flatpak and st.get("pid") and int(st["pid"]) == pid)
+            or ("jellyfindesktop" in low_name and st_flatpak == "org.jellyfin.jellyfindesktop")
+            or ("haruna" in low_name and st_flatpak == "org.kde.haruna")
+            or ("stremio" in low_name and st_flatpak == "com.stremio.stremio")
+        ):
+            if not st.get("idle", False) and not st.get("paused", False):
+                w = int(st.get("width") or 0)
+                h = int(st.get("height") or 0)
+                if w > 0 and h > 0:
+                    info.width = w
+                    info.height = h
+                    info.source = "mpv_lua"
+                    info.requires_4k = is_4k_resolution(w, h, cfg)
+                    break
+
+    # 2. Jellyfin Desktop log fallback
+    if info.width == 0 and "jellyfindesktop" in low_name:
+        w, h = jellyfin_log_fn()
+        if w > 0 and h > 0:
+            info.width = w
+            info.height = h
+            info.source = "jellyfin_log"
+            info.requires_4k = is_4k_resolution(w, h, cfg)
+
+    # 3. Local file probing via xesam:url or /proc/<pid>/fd (Haruna, mpv, Stremio, etc.)
+    if info.width == 0 and url.startswith("file://"):
+        fpath = unquote(urlparse(url).path)
+        w, h = ffprobe_cache.probe(fpath)
+        if w > 0 and h > 0:
+            info.width = w
+            info.height = h
+            info.source = "ffprobe_url"
+            info.requires_4k = is_4k_resolution(w, h, cfg)
+
+    if info.width == 0 and pid > 1:
+        for fpath in open_files_fn(pid):
+            w, h = ffprobe_cache.probe(fpath)
+            if w > 0 and h > 0:
+                info.width = w
+                info.height = h
+                info.source = "ffprobe_fd"
+                info.requires_4k = is_4k_resolution(w, h, cfg)
+                break
+
+    # 4. Title / URL 4K hint detection ONLY when exact resolution is unknown
+    if info.width == 0 and info.height == 0 and not info.requires_4k and cfg.get("title_4k_heuristic", True):
+        # Guard VacuumTube idle home screen ("YouTube on TV" with length 0)
+        is_browser = "chromium" in low_name or "firefox" in low_name
+        has_real_media = (not is_browser) or length > 0 or fullscreen or (win and win.get("active", False))
+        if has_real_media and any(text_indicates_4k(x) for x in (title, url, caption)):
+            info.source = "metadata_4k_hint"
+            info.requires_4k = True
+
+    # 5. Optional user policy: assume 4K on fullscreen playback when exact resolution is unknown
+    if info.width == 0 and info.height == 0 and not info.requires_4k and fullscreen and assume_4k_apps:
+        if any(app in low_name for app in assume_4k_apps):
+            info.source = "fullscreen_policy"
+            info.requires_4k = True
+
+    return info
+
+
+def collect_mpris_players(
+    session_bus: Any,
+    kwin_state: dict[str, Any] | None,
+    cfg: dict[str, Any],
+    ffprobe_cache: FFprobeCache,
+    mpv_states: list[dict[str, Any]],
+) -> list[PlaybackInfo]:
+    """Query all active MPRIS players and combine with Lua/log/ffprobe/metadata resolution checks."""
+    import dbus
+
+    results: list[PlaybackInfo] = []
+    try:
+        dbus_obj = session_bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+        dbus_iface = dbus.Interface(dbus_obj, "org.freedesktop.DBus")
+        names = [str(n) for n in dbus_iface.ListNames() if str(n).startswith("org.mpris.MediaPlayer2.")]
+    except Exception as exc:
+        LOGGER.debug("Failed listing MPRIS names: %s", exc)
+        return results
+
+    for name in names:
+        if name == "org.mpris.MediaPlayer2.playerctld":
+            continue
+        try:
+            proxy = session_bus.get_object(name, "/org/mpris/MediaPlayer2")
+            props = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
+            status = str(props.Get("org.mpris.MediaPlayer2.Player", "PlaybackStatus"))
+            metadata = dict(props.Get("org.mpris.MediaPlayer2.Player", "Metadata"))
+        except Exception:
+            continue
+
+        pid = 0
+        try:
+            pid = int(dbus_iface.GetConnectionUnixProcessID(name))
+        except Exception:
+            pass
+
+        results.append(
+            resolve_mpris_playback(
+                name, status, metadata, pid, kwin_state, cfg, ffprobe_cache, mpv_states
+            )
+        )
+
+    return results
+
+
+def build_standalone_mpv_playbacks(
+    mpv_states: list[dict[str, Any]],
+    mpris_players: list[PlaybackInfo],
+    cfg: dict[str, Any],
+) -> list[PlaybackInfo]:
+    """Include standalone mpv instances (which may not expose MPRIS) from Lua state files."""
+    mpris_pids = {p.pid for p in mpris_players if p.pid > 0}
+    has_jellyfin_mpris = any("jellyfindesktop" in p.player.lower() for p in mpris_players)
+    has_haruna_mpris = any("haruna" in p.player.lower() for p in mpris_players)
+    has_stremio_mpris = any("stremio" in p.player.lower() for p in mpris_players)
+    extra: list[PlaybackInfo] = []
+    for st in mpv_states:
+        pid = int(st.get("pid") or 0)
+        flatpak_id = str(st.get("flatpak_id") or "").lower()
+        if not flatpak_id and pid in mpris_pids:
+            continue
+        if flatpak_id == "org.jellyfin.jellyfindesktop" and has_jellyfin_mpris:
+            continue
+        if flatpak_id == "org.kde.haruna" and has_haruna_mpris:
+            continue
+        if flatpak_id == "com.stremio.stremio" and has_stremio_mpris:
+            continue
+        if st.get("idle", False) or st.get("paused", False):
+            continue
+        w = int(st.get("width") or 0)
+        h = int(st.get("height") or 0)
+        if w <= 0 or h <= 0:
+            continue
+        label = flatpak_id if flatpak_id else f"mpv:{pid}"
+        extra.append(
+            PlaybackInfo(
+                player=label,
+                status="Playing",
+                width=w,
+                height=h,
+                title=str(st.get("title") or ""),
+                source="mpv_lua",
+                requires_4k=is_4k_resolution(w, h, cfg),
+                pid=pid,
+            )
+        )
+    return extra
+
+
+def decide_target_mode(
+    kwin_state: dict[str, Any] | None,
+    playbacks: list[PlaybackInfo],
+    manual_mode: str,
+    cfg: dict[str, Any],
+    pid_ancestry_fn: Callable[[int], list[dict[str, Any]]] = get_pid_ancestry,
+) -> dict[str, Any]:
+    """
+    Pure decision function determining desired DP-1 mode ('4k' or '1080p') and reason.
+
+    Priority order:
+    1. Steam active/focused or fullscreen foreground -> '1080p' ('steam_priority')
+    2. Manual override ('4k' or '1080p') -> requested mode
+    3. Any active Playing 4K (>1080p) playback -> '4k' ('auto_4k_video')
+    4. Default -> '1080p' ('auto_default_1080p')
+    """
+    steam_hit, steam_detail = steam_is_active_or_foreground(kwin_state, pid_ancestry_fn)
+    if steam_hit:
+        return {
+            "target": "1080p",
+            "reason": "steam_priority",
+            "detail": steam_detail,
+            "immediate": True,
+        }
+
+    if manual_mode == "4k":
+        return {
+            "target": "4k",
+            "reason": "manual_override_4k",
+            "detail": "manual 4k override",
+            "immediate": True,
+        }
+    if manual_mode == "1080p":
+        return {
+            "target": "1080p",
+            "reason": "manual_override_1080p",
+            "detail": "manual 1080p override",
+            "immediate": True,
+        }
+
+    if bool(cfg.get("auto_4k_video_switch", False)):
+        for pb in playbacks:
+            if pb.status == "Playing" and pb.requires_4k:
+                dim = f"{pb.width}x{pb.height}" if pb.width and pb.height else pb.source
+                return {
+                    "target": "4k",
+                    "reason": "auto_4k_video",
+                    "detail": f"{pb.player} ({dim}, {pb.source})",
+                    "immediate": False,
+                }
+        default_detail = "no active 4K playback"
+    else:
+        default_detail = "auto 4K video switch disabled"
+
+    return {
+        "target": "1080p",
+        "reason": "auto_default_1080p",
+        "detail": default_detail,
+        "immediate": False,
+    }
+
+
+@dataclass
+class Debouncer:
+    """Prevents rapid display mode oscillation while keeping Steam/manual overrides responsive."""
+
+    debounce_to_4k_sec: float = 1.5
+    debounce_to_1080p_sec: float = 2.0
+    min_switch_interval_sec: float = 1.5
+    pending_target: str | None = None
+    pending_since: float = 0.0
+    last_applied_target: str | None = None
+    last_switch_time: float = -9999.0
+    pending_reason: str = ""
+
+    def evaluate(
+        self, desired: str, immediate: bool, reason: str, now: float
+    ) -> tuple[str | None, float | None]:
+        """
+        Return `(target_to_apply, retry_in_sec)`.
+        - If `target_to_apply` is not None, caller should ensure display is in that mode now.
+        - If `retry_in_sec` is not None, caller should re-evaluate after that delay.
+        """
+        if desired == self.last_applied_target:
+            self.pending_target = None
+            self.pending_reason = ""
+            return (None, None)
+
+        if immediate:
+            # Steam priority & manual overrides bypass debounce timers
+            self.pending_target = None
+            self.pending_reason = ""
+            self.last_applied_target = desired
+            self.last_switch_time = now
+            return (desired, None)
+
+        if self.pending_target != desired:
+            self.pending_target = desired
+            self.pending_since = now
+            self.pending_reason = reason
+
+        delay = self.debounce_to_4k_sec if desired == "4k" else self.debounce_to_1080p_sec
+        elapsed_pending = now - self.pending_since
+        remaining_debounce = max(0.0, delay - elapsed_pending)
+        remaining_cooldown = max(0.0, self.min_switch_interval_sec - (now - self.last_switch_time))
+        wait_needed = max(remaining_debounce, remaining_cooldown)
+
+        if wait_needed <= 0.001:
+            self.pending_target = None
+            self.pending_reason = ""
+            self.last_applied_target = desired
+            self.last_switch_time = now
+            return (desired, None)
+
+        return (None, wait_needed)
+
+
+def query_kwin_fallback(session_bus: Any) -> dict[str, Any] | None:
+    """Fallback KWin window list query using WindowsRunner + KWin getWindowInfo."""
+    import dbus
+
+    try:
+        runner = dbus.Interface(
+            session_bus.get_object("org.kde.KWin", "/WindowsRunner"),
+            "org.kde.krunner1",
+        )
+        kwin = dbus.Interface(
+            session_bus.get_object("org.kde.KWin", "/KWin"),
+            "org.kde.KWin",
+        )
+        matches = runner.Match("")
+    except Exception:
+        return None
+
+    windows: list[dict[str, Any]] = []
+    for item in matches:
+        try:
+            match_id = str(item[0])
+            # Match ID format from WindowsRunner is "<desktop>_<uuid>"
+            uuid = match_id.split("_", 1)[1] if "_" in match_id else match_id
+            info = dict(kwin.getWindowInfo(uuid))
+            windows.append(
+                {
+                    "internalId": uuid,
+                    "resourceClass": str(info.get("resourceClass") or ""),
+                    "resourceName": str(info.get("resourceName") or ""),
+                    "desktopFileName": str(info.get("desktopFile") or ""),
+                    "caption": str(info.get("caption") or ""),
+                    "pid": int(info.get("pid") or 0),
+                    "fullScreen": bool(info.get("fullscreen", False)),
+                    "minimized": bool(info.get("minimized", False)),
+                    "active": False,
+                    "width": int(info.get("width") or 0),
+                    "height": int(info.get("height") or 0),
+                }
+            )
+        except Exception:
+            continue
+
+    return {"reason": "fallback", "active": None, "windows": windows}
+
+
+def read_persisted_manual_mode() -> str:
+    try:
+        with open(MANUAL_STATE_PATH, "r", encoding="utf-8") as fh:
+            mode = str(json.load(fh).get("mode") or "auto")
+        if mode in {"auto", "4k", "1080p"}:
+            return mode
+    except Exception:
+        pass
+    return "auto"
+
+
+FLATPAK_SCOPE_RE = re.compile(r"app-flatpak-[^\s/]+\.scope")
+_IGNORED_TRANSIENT_WINDOW_TYPES = {10, 11, 12, 14, 15, 16, 17}
+_TV_MOVIE_MODE_CAPTIONS = {"movie mode", "1080p mode", "1080p mode (steam priority)"}
+
+
+def get_flatpak_scope(pid: int) -> str:
+    """Return the Flatpak systemd cgroup scope name for a PID, if running inside one."""
+    if pid <= 1:
+        return ""
+    try:
+        with open(f"/proc/{pid}/cgroup", "r", encoding="utf-8", errors="ignore") as fh:
+            match = FLATPAK_SCOPE_RE.search(fh.read())
+            return match.group(0) if match else ""
+    except OSError:
+        return ""
+
+
+def _strip_desktop_suffix(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text[:-8] if text.endswith(".desktop") else text
+
+
+def _compact_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value)
+
+
+def is_ignored_transient_window(win: dict[str, Any] | None) -> bool:
+    """Return True for OSDs, notifications, popups, Polkit auth, and mode-toggle banners."""
+    if not win:
+        return False
+    if bool(win.get("onScreenDisplay")) or bool(win.get("notification")) or bool(win.get("popupWindow")):
+        return True
+    try:
+        wtype = int(win.get("windowType") or 0)
+    except (TypeError, ValueError):
+        wtype = 0
+    if wtype in _IGNORED_TRANSIENT_WINDOW_TYPES:
+        return True
+    if bool(win.get("transient")) and not bool(win.get("normalWindow")) and not bool(win.get("desktopWindow")):
+        return True
+
+    rc = str(win.get("resourceClass") or "").strip().lower()
+    rn = str(win.get("resourceName") or "").strip().lower()
+    df = _strip_desktop_suffix(win.get("desktopFileName"))
+    cap = str(win.get("caption") or "").strip().lower()
+    for token in (rc, rn, df):
+        if token.startswith("polkit-kde-authentication-agent") or token.startswith("tv-movie-mode"):
+            return True
+    if cap in _TV_MOVIE_MODE_CAPTIONS and df in {"", "tv-movie-mode"}:
+        if not any(tok.startswith(("com.stremio", "rocks.shy", "org.jellyfin", "org.kde.haruna", "mpv", "steam")) for tok in (rc, rn, df)):
+            return True
+    return False
+
+
+def is_bigscreen_home_or_shell(win: dict[str, Any] | None) -> bool:
+    """Return True when returning to Plasma Bigscreen Home, minimizing tasks, or opening a shell overlay."""
+    if win is None or bool(win.get("minimized")):
+        return True
+    rc = str(win.get("resourceClass") or "").strip().lower()
+    rn = str(win.get("resourceName") or "").strip().lower()
+    if rc == "plasmashell" or rn == "plasmashell":
+        if bool(win.get("onScreenDisplay")) or bool(win.get("notification")) or bool(win.get("popupWindow")):
+            return False
+        if bool(win.get("desktopWindow")) or bool(win.get("specialWindow")) or not bool(win.get("normalWindow")):
+            return True
+    return False
+
+
+def window_matches_mpris(
+    win: dict[str, Any] | None,
+    mpris_info: dict[str, Any],
+    flatpak_scope_fn: Callable[[int], str] = get_flatpak_scope,
+) -> bool:
+    """Return True when an MPRIS bus entry belongs to the given KWin window."""
+    if not win:
+        return False
+
+    try:
+        win_pid = int(win.get("pid") or 0)
+    except (TypeError, ValueError):
+        win_pid = 0
+    try:
+        mpris_pid = int(mpris_info.get("pid") or 0)
+    except (TypeError, ValueError):
+        mpris_pid = 0
+
+    if win_pid > 1 and mpris_pid > 1 and win_pid == mpris_pid:
+        return True
+
+    if win_pid > 1 and mpris_pid > 1:
+        w_scope = flatpak_scope_fn(win_pid)
+        if w_scope and w_scope == flatpak_scope_fn(mpris_pid):
+            return True
+
+    win_tokens: list[str] = []
+    for key in ("desktopFileName", "resourceClass", "resourceName"):
+        tok = _strip_desktop_suffix(win.get(key))
+        if tok and tok not in win_tokens:
+            win_tokens.append(tok)
+    win_compacts = {_compact_token(t) for t in win_tokens if len(_compact_token(t)) >= 3}
+
+    de = _strip_desktop_suffix(mpris_info.get("desktop_entry"))
+    if de:
+        de_compact = _compact_token(de)
+        de_short = de.rsplit(".", 1)[-1]
+        if (
+            de in win_tokens
+            or (len(de_compact) >= 3 and de_compact in win_compacts)
+            or (len(de_short) >= 4 and de_short in win_tokens)
+        ):
+            return True
+
+    candidates: list[str] = []
+    identity = str(mpris_info.get("identity") or "").strip().lower()
+    if len(identity) >= 3:
+        candidates.append(identity)
+    bus_name = str(mpris_info.get("bus_name") or "").strip().lower()
+    if bus_name.startswith("org.mpris.mediaplayer2."):
+        suffix = bus_name[len("org.mpris.mediaplayer2."):].split(".instance", 1)[0]
+        if len(suffix) >= 3 and suffix not in {"chromium", "chrome", "firefox", "electron"}:
+            candidates.append(suffix)
+
+    for cand in candidates:
+        cand_compact = _compact_token(cand)
+        if len(cand_compact) < 3:
+            continue
+        for wc in win_compacts:
+            if cand_compact == wc or cand_compact in wc or wc in cand_compact:
+                return True
+    return False
+
+
+def select_mpris_players_to_pause(
+    kwin_state: dict[str, Any] | None,
+    mpris_entries: list[dict[str, Any]],
+    cfg: dict[str, Any],
+    flatpak_scope_fn: Callable[[int], str] = get_flatpak_scope,
+) -> list[dict[str, Any]]:
+    """Select active background MPRIS players that should be paused for the current KWin focus state."""
+    if not bool(cfg.get("auto_pause_background_media", True)) or not kwin_state:
+        return []
+    reason = str(kwin_state.get("reason") or "").strip().lower()
+    if reason in {"fallback", "init"}:
+        return []
+
+    active = kwin_state.get("active")
+    if is_ignored_transient_window(active):
+        return []
+
+    on_home = is_bigscreen_home_or_shell(active)
+    to_pause: list[dict[str, Any]] = []
+    for entry in mpris_entries:
+        bus_name = str(entry.get("bus_name") or "")
+        if not bus_name or bus_name == "org.mpris.MediaPlayer2.playerctld":
+            continue
+        if str(entry.get("playback_status") or "") != "Playing":
+            continue
+        if entry.get("can_pause") is False:
+            continue
+        if on_home or not window_matches_mpris(active, entry, flatpak_scope_fn=flatpak_scope_fn):
+            to_pause.append(entry)
+    return to_pause
+
+
+def collect_mpris_pause_candidates(session_bus: Any) -> list[dict[str, Any]]:
+    """Query all live MPRIS players (except playerctld) for auto-pause evaluation."""
+    import dbus
+
+    entries: list[dict[str, Any]] = []
+    try:
+        dbus_obj = session_bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+        dbus_iface = dbus.Interface(dbus_obj, "org.freedesktop.DBus")
+        names = [
+            str(n)
+            for n in dbus_iface.ListNames()
+            if str(n).startswith("org.mpris.MediaPlayer2.") and str(n) != "org.mpris.MediaPlayer2.playerctld"
+        ]
+    except Exception as exc:
+        LOGGER.debug("Failed to list MPRIS bus names for auto-pause: %s", exc)
+        return entries
+
+    for name in names:
+        try:
+            proxy = session_bus.get_object(name, "/org/mpris/MediaPlayer2")
+            props_iface = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
+            player_props = dict(props_iface.GetAll("org.mpris.MediaPlayer2.Player"))
+            playback_status = str(player_props.get("PlaybackStatus") or "")
+            if playback_status != "Playing":
+                continue
+            can_pause = bool(player_props.get("CanPause", True))
+            root_props: dict[str, Any] = {}
+            try:
+                root_props = dict(props_iface.GetAll("org.mpris.MediaPlayer2"))
+            except Exception:
+                root_props = {}
+            pid = 0
+            try:
+                pid = int(dbus_iface.GetConnectionUnixProcessID(name))
+            except Exception:
+                pid = 0
+            entries.append(
+                {
+                    "bus_name": name,
+                    "playback_status": playback_status,
+                    "can_pause": can_pause,
+                    "desktop_entry": str(root_props.get("DesktopEntry") or ""),
+                    "identity": str(root_props.get("Identity") or ""),
+                    "pid": pid,
+                }
+            )
+        except Exception as exc:
+            LOGGER.debug("Skipping MPRIS auto-pause query for %s: %s", name, exc)
+    return entries
+
+
+def pause_mpris_player(session_bus: Any, bus_name: str) -> bool:
+    """Pause an MPRIS player via org.mpris.MediaPlayer2.Player.Pause()."""
+    import dbus
+
+    try:
+        proxy = session_bus.get_object(bus_name, "/org/mpris/MediaPlayer2")
+        player_iface = dbus.Interface(proxy, "org.mpris.MediaPlayer2.Player")
+        player_iface.Pause()
+        return True
+    except Exception as exc:
+        LOGGER.warning("Failed to pause MPRIS player %s: %s", bus_name, exc)
+        return False
+
+
+def write_persisted_manual_mode(mode: str) -> None:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = MANUAL_STATE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"mode": mode, "updated_at": int(time.time())}, fh)
+    os.replace(tmp, MANUAL_STATE_PATH)
+
+
+def run_daemon() -> int:
+    """Run the persistent DBus + GLib event-driven display-mode daemon."""
+    import dbus
+    import dbus.mainloop.glib
+    import dbus.service
+    from gi.repository import GLib
+
+    apply_session_env()
+    os.makedirs(STATE_DIR, exist_ok=True)
+    cfg = load_config()
+
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    session_bus = dbus.SessionBus()
+
+    class TvDisplayDaemon(dbus.service.Object):
+        def __init__(self) -> None:
+            bus_name = dbus.service.BusName(BUS_NAME, session_bus)
+            super().__init__(bus_name, BUS_PATH)
+            self.cfg = cfg
+            self.manual_mode = read_persisted_manual_mode()
+            self.kwin_state: dict[str, Any] | None = None
+            self.last_kwin_push = 0.0
+            self.playbacks: list[PlaybackInfo] = []
+            self.last_decision: dict[str, Any] = {}
+            self.ffprobe_cache = FFprobeCache()
+            self.debouncer = Debouncer(
+                debounce_to_4k_sec=float(cfg["debounce_to_4k_sec"]),
+                debounce_to_1080p_sec=float(cfg["debounce_to_1080p_sec"]),
+                min_switch_interval_sec=float(cfg["min_switch_interval_sec"]),
+            )
+            self._debounce_timer_id: int | None = None
+            self._eval_scheduled = False
+            self._last_pause_sent: dict[str, float] = {}
+
+            # Seed debouncer with actual current mode on startup
+            try:
+                ks = query_kscreen(str(cfg["output"]), cfg)
+                if is_already_target_mode(ks, "4k", cfg):
+                    self.debouncer.last_applied_target = "4k"
+                elif is_already_target_mode(ks, "1080p", cfg):
+                    self.debouncer.last_applied_target = "1080p"
+            except Exception as exc:
+                LOGGER.warning("Initial kscreen-doctor query failed: %s", exc)
+
+            # Subscribe to MPRIS playback changes & KWin restarts
+            session_bus.add_signal_receiver(
+                self._on_mpris_props_changed,
+                signal_name="PropertiesChanged",
+                dbus_interface="org.freedesktop.DBus.Properties",
+                path="/org/mpris/MediaPlayer2",
+            )
+            session_bus.add_signal_receiver(
+                self._on_name_owner_changed,
+                signal_name="NameOwnerChanged",
+                dbus_interface="org.freedesktop.DBus",
+            )
+
+            self.schedule_evaluate(delay_ms=100)
+            GLib.timeout_add_seconds(int(cfg["poll_interval_sec"]), self._on_periodic_tick)
+
+        def ensure_kwin_script_loaded(self, force_reload: bool = False) -> bool:
+            if not os.path.isfile(KWIN_SCRIPT_PATH):
+                LOGGER.warning("KWin script missing at %s", KWIN_SCRIPT_PATH)
+                return False
+            try:
+                scripting = dbus.Interface(
+                    session_bus.get_object("org.kde.KWin", "/Scripting"),
+                    "org.kde.kwin.Scripting",
+                )
+                loaded = bool(scripting.isScriptLoaded(KWIN_SCRIPT_NAME))
+                if loaded and force_reload:
+                    scripting.unloadScript(KWIN_SCRIPT_NAME)
+                    loaded = False
+                if not loaded:
+                    sid = int(
+                        session_bus.call_blocking(
+                            "org.kde.KWin",
+                            "/Scripting",
+                            "org.kde.kwin.Scripting",
+                            "loadScript",
+                            "ss",
+                            [KWIN_SCRIPT_PATH, KWIN_SCRIPT_NAME],
+                        )
+                    )
+                    if sid >= 0:
+                        scripting.start()
+                        LOGGER.info("Loaded & started KWin script %s (id=%d)", KWIN_SCRIPT_NAME, sid)
+                        return True
+                    LOGGER.warning("KWin loadScript returned %d", sid)
+                    return False
+                return True
+            except Exception as exc:
+                LOGGER.debug("KWin scripting unavailable: %s", exc)
+                return False
+
+        def _on_mpris_props_changed(self, iface: str, *_args: Any) -> None:
+            if iface in {"org.mpris.MediaPlayer2.Player", "org.mpris.MediaPlayer2"}:
+                self.schedule_evaluate(delay_ms=50)
+
+        def _on_name_owner_changed(self, name: str, old_owner: str, new_owner: str) -> None:
+            name_str = str(name)
+            if name_str == "org.kde.KWin" and new_owner:
+                LOGGER.info("KWin appeared/restarted, reloading script")
+                GLib.timeout_add(500, lambda: (self.ensure_kwin_script_loaded(force_reload=True), False)[1])
+            elif name_str.startswith("org.mpris.MediaPlayer2."):
+                self.schedule_evaluate(delay_ms=100)
+
+        def _on_periodic_tick(self) -> bool:
+            # Ensure KWin script stays loaded (e.g. if KWin started after daemon)
+            if time.monotonic() - self.last_kwin_push > 15:
+                self.ensure_kwin_script_loaded(force_reload=False)
+            self.evaluate()
+            return True
+
+        def schedule_evaluate(self, delay_ms: int = 50) -> None:
+            if self._eval_scheduled:
+                return
+            self._eval_scheduled = True
+
+            def _run() -> bool:
+                self._eval_scheduled = False
+                self.evaluate()
+                return False
+
+            GLib.timeout_add(delay_ms, _run)
+
+        def _schedule_debounce_wakeup(self, wait_sec: float) -> None:
+            if self._debounce_timer_id is not None:
+                GLib.source_remove(self._debounce_timer_id)
+                self._debounce_timer_id = None
+            ms = max(50, int(wait_sec * 1000) + 25)
+
+            def _wake() -> bool:
+                self._debounce_timer_id = None
+                self.evaluate()
+                return False
+
+            self._debounce_timer_id = GLib.timeout_add(ms, _wake)
+
+        def evaluate(self) -> dict[str, Any]:
+            self.cfg = load_config()
+            self.debouncer.debounce_to_4k_sec = float(self.cfg["debounce_to_4k_sec"])
+            self.debouncer.debounce_to_1080p_sec = float(self.cfg["debounce_to_1080p_sec"])
+            self.debouncer.min_switch_interval_sec = float(self.cfg["min_switch_interval_sec"])
+
+            kwin_state = self.kwin_state
+            if kwin_state is None:
+                kwin_state = query_kwin_fallback(session_bus)
+
+            if bool(self.cfg.get("auto_4k_video_switch", False)):
+                mpv_states = read_mpv_lua_states()
+                mpris_players = collect_mpris_players(
+                    session_bus, kwin_state, self.cfg, self.ffprobe_cache, mpv_states
+                )
+                standalone_mpv = build_standalone_mpv_playbacks(mpv_states, mpris_players, self.cfg)
+                self.playbacks = mpris_players + standalone_mpv
+            else:
+                self.playbacks = []
+
+            decision = decide_target_mode(kwin_state, self.playbacks, self.manual_mode, self.cfg)
+            self.last_decision = decision
+
+            now = time.monotonic()
+            apply_target, retry_in = self.debouncer.evaluate(
+                decision["target"],
+                bool(decision["immediate"]),
+                str(decision["reason"]),
+                now,
+            )
+
+            if apply_target is not None:
+                if self._debounce_timer_id is not None:
+                    GLib.source_remove(self._debounce_timer_id)
+                    self._debounce_timer_id = None
+                try:
+                    apply_display_mode(apply_target, self.cfg, dry_run=False)
+                except Exception as exc:
+                    LOGGER.error("Display switch failed: %s", exc)
+                    # Clear cached last_applied_target so next tick retries
+                    self.debouncer.last_applied_target = None
+            elif retry_in is not None:
+                self._schedule_debounce_wakeup(retry_in)
+
+            return decision
+
+        def _maybe_auto_pause(self, state: dict[str, Any]) -> None:
+            if not bool(self.cfg.get("auto_pause_background_media", True)):
+                return
+            reason = str(state.get("reason") or "").strip().lower()
+            if reason in {"fallback", "init"}:
+                return
+            candidates = collect_mpris_pause_candidates(session_bus)
+            if not candidates:
+                return
+            to_pause = select_mpris_players_to_pause(state, candidates, self.cfg)
+            now = time.monotonic()
+            for entry in to_pause:
+                bus_name = str(entry["bus_name"])
+                last_ts = self._last_pause_sent.get(bus_name, 0.0)
+                if (now - last_ts) < 1.0:
+                    continue
+                if pause_mpris_player(session_bus, bus_name):
+                    self._last_pause_sent[bus_name] = now
+                    active = state.get("active") or {}
+                    LOGGER.info(
+                        "Auto-paused background MPRIS player %s (identity=%r, active=%r, reason=%s)",
+                        bus_name,
+                        entry.get("identity", ""),
+                        active.get("resourceClass") or active.get("desktopFileName") or "home",
+                        reason or "kwin",
+                    )
+
+        @dbus.service.method(BUS_IFACE, in_signature="s", out_signature="")
+        def ReportKWinState(self, state_json: str) -> None:
+            try:
+                state = json.loads(str(state_json))
+                self.kwin_state = state
+                self.last_kwin_push = time.monotonic()
+                self._maybe_auto_pause(state)
+                self.schedule_evaluate(delay_ms=20)
+            except Exception as exc:
+                LOGGER.warning("Invalid KWin state payload: %s", exc)
+
+        @dbus.service.method(BUS_IFACE, in_signature="s", out_signature="s")
+        def SetManualMode(self, mode: str) -> str:
+            req = str(mode).strip().lower()
+            if req == "movie":
+                req = "4k"
+            elif req == "toggle":
+                is_4k = (self.manual_mode == "4k") or (
+                    self.manual_mode == "auto" and self.debouncer.last_applied_target == "4k"
+                )
+                req = "1080p" if is_4k else "4k"
+            if req not in {"auto", "4k", "1080p"}:
+                return json.dumps({"error": f"Unsupported mode {req!r}"})
+            self.manual_mode = req
+            write_persisted_manual_mode(req)
+            decision = self.evaluate()
+            return json.dumps({"manual_mode": self.manual_mode, "decision": decision})
+
+        @dbus.service.method(BUS_IFACE, in_signature="", out_signature="s")
+        def EvaluateNow(self) -> str:
+            decision = self.evaluate()
+            return self.GetStatus() if decision else "{}"
+
+        @dbus.service.method(BUS_IFACE, in_signature="", out_signature="s")
+        def GetStatus(self) -> str:
+            return json.dumps(build_status_payload(self.cfg, self.manual_mode, self.kwin_state, self.playbacks, self.last_decision, self.debouncer, daemon_running=True))
+
+    daemon = TvDisplayDaemon()
+    # Force-reload KWin script on startup so initial state pushes immediately
+    daemon.ensure_kwin_script_loaded(force_reload=True)
+
+    loop = GLib.MainLoop()
+
+    def _handle_sig(*_args: Any) -> None:
+        LOGGER.info("Shutting down tv-display-mode daemon")
+        loop.quit()
+
+    signal.signal(signal.SIGTERM, _handle_sig)
+    signal.signal(signal.SIGINT, _handle_sig)
+    loop.run()
+    return 0
+
+
+def build_status_payload(
+    cfg: dict[str, Any],
+    manual_mode: str,
+    kwin_state: dict[str, Any] | None,
+    playbacks: list[PlaybackInfo],
+    decision: dict[str, Any],
+    debouncer: Debouncer | None = None,
+    daemon_running: bool = False,
+) -> dict[str, Any]:
+    kscreen_summary: dict[str, Any] = {}
+    try:
+        ks = query_kscreen(str(cfg["output"]), cfg)
+        cur = ks.get("current_mode") or {}
+        kscreen_summary = {
+            "output": ks["output"],
+            "current_mode_id": ks["current_mode_id"],
+            "current_mode_name": cur.get("name", ""),
+            "refresh_rate": cur.get("refreshRate"),
+            "size": cur.get("size"),
+            "mode_4k_id": ks["mode_4k"]["id"],
+            "mode_1080p_id": ks["mode_1080p"]["id"],
+        }
+    except Exception as exc:
+        kscreen_summary = {"error": str(exc)}
+
+    active_win = (kwin_state or {}).get("active")
+    return {
+        "daemon_running": daemon_running,
+        "manual_mode": manual_mode,
+        "auto_4k_video_switch": bool(cfg.get("auto_4k_video_switch", False)),
+        "auto_pause_background_media": bool(cfg.get("auto_pause_background_media", True)),
+        "display": kscreen_summary,
+        "decision": decision,
+        "pending_target": debouncer.pending_target if debouncer else None,
+        "active_window": active_win,
+        "playbacks": [p.to_dict() for p in playbacks],
+    }
+
+
+def _call_daemon(method: str, *args: Any) -> str | None:
+    import dbus
+
+    apply_session_env()
+    try:
+        bus = dbus.SessionBus()
+        proxy = bus.get_object(BUS_NAME, BUS_PATH)
+        iface = dbus.Interface(proxy, BUS_IFACE)
+        return str(getattr(iface, method)(*args))
+    except Exception:
+        return None
+
+
+def _oneshot_collect(cfg: dict[str, Any]) -> tuple[dict[str, Any] | None, list[PlaybackInfo]]:
+    import dbus
+
+    apply_session_env()
+    bus = dbus.SessionBus()
+    kwin_state = query_kwin_fallback(bus)
+    if not bool(cfg.get("auto_4k_video_switch", False)):
+        return kwin_state, []
+    mpv_states = read_mpv_lua_states()
+    ffprobe_cache = FFprobeCache()
+    mpris_players = collect_mpris_players(bus, kwin_state, cfg, ffprobe_cache, mpv_states)
+    standalone_mpv = build_standalone_mpv_playbacks(mpv_states, mpris_players, cfg)
+    return kwin_state, mpris_players + standalone_mpv
+
+
+def format_status_text(data: dict[str, Any]) -> str:
+    disp = data.get("display") or {}
+    dec = data.get("decision") or {}
+    active = data.get("active_window") or {}
+    auto_4k = bool(data.get("auto_4k_video_switch", False))
+    auto_pause = bool(data.get("auto_pause_background_media", True))
+    lines = [
+        f"Daemon:        {'running' if data.get('daemon_running') else 'stopped (oneshot)'}",
+        f"Policy Mode:   {data.get('manual_mode', 'auto')}",
+        f"Auto 4K Video: {'enabled' if auto_4k else 'disabled (Steam 1080p auto-switch active)'}",
+        f"Auto Pause Bg: {'enabled' if auto_pause else 'disabled'}",
+        f"Output ({disp.get('output', 'DP-1')}): {disp.get('current_mode_name', 'unknown')} (mode id {disp.get('current_mode_id', '?')})",
+        f"Decision:      {dec.get('target', '?')} ({dec.get('reason', '?')}: {dec.get('detail', '')})",
+    ]
+    if data.get("pending_target"):
+        lines.append(f"Pending:       {data['pending_target']} (debouncing)")
+    if active:
+        lines.append(
+            f"Active Window: {active.get('resourceClass') or active.get('caption') or 'unknown'}"
+            f" (fullscreen={active.get('fullScreen')}, pid={active.get('pid')})"
+        )
+    pbs = data.get("playbacks") or []
+    if pbs:
+        lines.append("Media Players:")
+        for p in pbs:
+            dim = f"{p['width']}x{p['height']}" if p.get("width") and p.get("height") else "unknown-res"
+            lines.append(
+                f"  - {p['player']}: {p['status']} | {dim} | 4k={p['requires_4k']}"
+                + (f" ({p['source']})" if p.get("source") else "")
+                + (f" | {p['title']}" if p.get("title") else "")
+            )
+    else:
+        lines.append("Media Players: none")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="tv-display-mode",
+        description="Auto & manual DP-1 display-mode switcher (4K@30 for 4K video, 1080p@60 for Steam/desktop).",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable debug logging"
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("daemon", help="Run persistent DBus/KWin auto-switching daemon")
+
+    p_status = sub.add_parser("status", help="Show current DP-1 mode, policy, active window, and players")
+    p_status.add_argument("--json", action="store_true", help="Print JSON output")
+
+    for name, help_txt in (
+        ("4k", "Switch DP-1 to Movie Mode 3840x2160@30.00 (Steam still overrides to 1080p@60)"),
+        ("movie", "Alias for 4k (Movie Mode 3840x2160@30.00)"),
+        ("1080p", "Switch DP-1 to 1920x1080@60.00"),
+        ("auto", "Return to automatic mode (1080p@60 default unless auto_4k_video_switch=true; Steam auto-1080p)"),
+        ("toggle", "Toggle between Movie Mode (4k) and 1080p Mode"),
+    ):
+        p_mode = sub.add_parser(name, help=help_txt)
+        p_mode.add_argument("--json", action="store_true", help="Print JSON output")
+
+    p_check = sub.add_parser("check", aliases=["eval"], help="Evaluate current state and optionally apply mode")
+    p_check.add_argument("--dry-run", action="store_true", help="Evaluate without calling kscreen-doctor")
+    p_check.add_argument("--json", action="store_true", help="Print JSON output")
+
+    args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+
+    cmd = args.command or "status"
+    apply_session_env()
+    if cmd == "daemon":
+        return run_daemon()
+
+    cfg = load_config()
+
+    if cmd == "status":
+        raw = _call_daemon("EvaluateNow")
+        if raw:
+            data = json.loads(raw)
+        else:
+            kwin_state, playbacks = _oneshot_collect(cfg)
+            manual_mode = read_persisted_manual_mode()
+            dec = decide_target_mode(kwin_state, playbacks, manual_mode, cfg)
+            data = build_status_payload(cfg, manual_mode, kwin_state, playbacks, dec, daemon_running=False)
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=2))
+        else:
+            print(format_status_text(data))
+        return 0
+
+    if cmd in {"4k", "movie", "1080p", "auto", "toggle"}:
+        raw = _call_daemon("SetManualMode", cmd)
+        if raw:
+            res = json.loads(raw)
+            if "error" in res:
+                print(res["error"], file=sys.stderr)
+                return 1
+            dec = res["decision"]
+            if getattr(args, "json", False):
+                print(json.dumps(res, indent=2))
+            else:
+                print(
+                    f"Override={res['manual_mode']} -> target={dec['target']} ({dec['reason']}: {dec['detail']})"
+                )
+            return 0
+
+        # Daemon not running: persist override and apply safely (respecting Steam!)
+        kwin_state, playbacks = _oneshot_collect(cfg)
+        ks = query_kscreen(str(cfg["output"]), cfg)
+        if cmd == "movie":
+            cmd = "4k"
+        elif cmd == "toggle":
+            persisted = read_persisted_manual_mode()
+            is_4k = (persisted == "4k") or (
+                persisted == "auto" and is_already_target_mode(ks, "4k", cfg)
+            )
+            cmd = "1080p" if is_4k else "4k"
+        write_persisted_manual_mode(cmd)
+        dec = decide_target_mode(kwin_state, playbacks, cmd, cfg)
+        applied = apply_display_mode(dec["target"], cfg, dry_run=False, kscreen_info=ks)
+        if getattr(args, "json", False):
+            print(json.dumps({"manual_mode": cmd, "decision": dec, "applied": applied}, indent=2))
+        else:
+            print(
+                f"Override={cmd} -> target={dec['target']} ({dec['reason']}), "
+                f"changed={applied['changed']} (mode {applied['mode_id']}: {applied['mode_name']})"
+            )
+        return 0
+
+    if cmd in {"check", "eval"}:
+        if not getattr(args, "dry_run", False):
+            raw = _call_daemon("EvaluateNow")
+            if raw:
+                data = json.loads(raw)
+                if getattr(args, "json", False):
+                    print(json.dumps(data, indent=2))
+                else:
+                    print(format_status_text(data))
+                return 0
+
+        kwin_state, playbacks = _oneshot_collect(cfg)
+        manual_mode = read_persisted_manual_mode()
+        dec = decide_target_mode(kwin_state, playbacks, manual_mode, cfg)
+        applied = apply_display_mode(dec["target"], cfg, dry_run=bool(getattr(args, "dry_run", False)))
+        out = {"decision": dec, "applied": applied, "playbacks": [p.to_dict() for p in playbacks]}
+        if getattr(args, "json", False):
+            print(json.dumps(out, indent=2))
+        else:
+            print(
+                f"Decision: {dec['target']} ({dec['reason']}: {dec['detail']}) | "
+                f"changed={applied['changed']} mode={applied['mode_id']} ({applied['mode_name']})"
+                + (" [dry-run]" if applied.get("dry_run") else "")
+            )
+        return 0
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

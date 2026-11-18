@@ -1,0 +1,12 @@
+[Unit]
+Description=Automatic TV Display Mode Switcher (Movie Mode 4K@30, Steam 1080p@60, Background Auto-Pause)
+After=plasma-kwin_wayland.service graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/tv-display-mode daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

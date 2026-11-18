@@ -1,0 +1,71 @@
+[Favs]
+
+[Favs][0]
+categories=AudioVideo;Video;TV;
+comment=Ad-Free YouTube Leanback TV Experience
+desktopPath=@HOME@/.local/share/applications/rocks.shy.VacuumTube.desktop
+entryPath=@HOME@/.local/share/applications/rocks.shy.VacuumTube.desktop
+icon=rocks.shy.VacuumTube
+name=YouTube TV
+startupNotify=true
+storageId=rocks.shy.VacuumTube.desktop
+
+[Favs][1]
+categories=AudioVideo;Video;Player;TV;
+comment=Stream Movies, TV Series & Live Channels
+desktopPath=@HOME@/.local/share/applications/com.stremio.Stremio.desktop
+entryPath=@HOME@/.local/share/applications/com.stremio.Stremio.desktop
+icon=com.stremio.Stremio
+name=Stremio
+startupNotify=true
+storageId=com.stremio.Stremio.desktop
+
+[Favs][2]
+categories=AudioVideo;Video;Player;TV;
+comment=Jellyfin Media Player (Fullscreen TV Mode)
+desktopPath=@HOME@/.local/share/applications/org.jellyfin.JellyfinDesktop.desktop
+entryPath=@HOME@/.local/share/applications/org.jellyfin.JellyfinDesktop.desktop
+icon=org.jellyfin.JellyfinDesktop
+name=Jellyfin TV
+startupNotify=true
+storageId=org.jellyfin.JellyfinDesktop.desktop
+
+[Favs][3]
+categories=Game;Application;
+comment=Launch Steam in 10-Foot Console & TV Mode
+desktopPath=@HOME@/.local/share/applications/steam-bigpicture.desktop
+entryPath=@HOME@/.local/share/applications/steam-bigpicture.desktop
+icon=steam
+name=Steam
+startupNotify=true
+storageId=steam-bigpicture.desktop
+
+[Favs][4]
+categories=AudioVideo;Player;Video;
+comment=Video Player
+desktopPath=/var/lib/flatpak/exports/share/applications/org.kde.haruna.desktop
+entryPath=/var/lib/flatpak/exports/share/applications/org.kde.haruna.desktop
+icon=org.kde.haruna
+name=Haruna
+startupNotify=true
+storageId=org.kde.haruna.desktop
+
+[Favs][5]
+categories=System;Utility;
+comment=Switch back to standard KDE Plasma Desktop Mode
+desktopPath=@HOME@/.local/share/applications/return-to-desktop.desktop
+entryPath=@HOME@/.local/share/applications/return-to-desktop.desktop
+icon=user-desktop
+name=Desktop Mode
+startupNotify=false
+storageId=return-to-desktop.desktop
+
+[Favs][6]
+categories=AudioVideo;Video;
+comment=Toggle between Movie Mode (4K @ 30Hz) and 1080p Mode (1080p @ 60Hz)
+desktopPath=@HOME@/.local/share/applications/tv-movie-mode.desktop
+entryPath=@HOME@/.local/share/applications/tv-movie-mode.desktop
+icon=video-television
+name=Movie Mode
+startupNotify=false
+storageId=tv-movie-mode.desktop

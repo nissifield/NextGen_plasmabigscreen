@@ -1,0 +1,16 @@
+[General]
+Order=stremio-fullscreen
+count=1
+rules=stremio-fullscreen
+
+[stremio-fullscreen]
+Description=Stremio Default Fullscreen
+fullscreen=true
+fullscreenrule=3
+maximizehoriz=true
+maximizehorizrule=3
+maximizevert=true
+maximizevertrule=3
+types=1
+wmclass=com.stremio.Stremio
+wmclassmatch=1

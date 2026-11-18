@@ -1,0 +1,3 @@
+[Environment]
+LD_PRELOAD=@HOME@/.var/app/com.stremio.Stremio/data/stremio-mpv-shim.so
+LIBVA_DRIVER_NAME=iHD

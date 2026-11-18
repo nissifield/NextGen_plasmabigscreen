@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Plasma Bigscreen TV Autostart
+Comment=Automatically switch KDE Plasma into Plasma Bigscreen TV Mode on login
+Exec=@HOME@/.local/bin/tv-session-switch.sh bigscreen
+Icon=plasma-bigscreen
+Terminal=false
+X-KDE-AutostartPhase=2
+OnlyShowIn=KDE;

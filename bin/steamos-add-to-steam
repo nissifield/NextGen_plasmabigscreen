@@ -1,0 +1,58 @@
+#!/usr/bin/sh
+# User-space override for /usr/bin/steamos-add-to-steam
+# Fixes KDE Plasma 6 kmimetypefinder returning "text/x-shellscript" (or "text/x-python")
+# in addition to legacy "application/x-shellscript" when running `ujust get-media-app`.
+
+set -e
+
+add_to_steam() {
+    encodedUrl="steam://addnonsteamgame/$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1")"
+    touch /tmp/addnonsteamgamefile
+    steam "$encodedUrl"
+}
+
+show_error() {
+    if [ "$show_dialog" = "1" ]; then
+        kdialog --title Error --error "$1"
+    else
+        echo "$1" >&2
+    fi
+}
+
+if [ "$(id -u)" = "0" ]; then
+    show_error "This script cannot be run as root"
+    exit 1
+fi
+
+if [ "$XDG_SESSION_TYPE" = "tty" ] && ! pgrep -x steam >/dev/null 2>&1; then
+   show_error "Cannot run this script from a tty if Steam is not running"
+   exit 1
+fi
+
+if [ "$1" = "-ui" ]; then
+    show_dialog=1
+    shift
+fi
+
+file=$(realpath "$1")
+if [ ! -e "$file" ]; then
+    echo "Usage: steamos-add-to-steam [-ui] <path>"
+    exit 1
+fi
+
+mime=$(kmimetypefinder "$file")
+case "$mime" in
+    "application/x-desktop"|"application/x-ms-dos-executable"|"application/x-msdownload"|"application/vnd.microsoft.portable-executable")
+        add_to_steam "$file"
+        ;;
+    "application/x-executable"|"application/vnd.appimage"|"application/x-shellscript"|"text/x-shellscript"|"text/x-python"|"text/plain")
+        if [ -x "$file" ]; then
+            add_to_steam "$file"
+        else
+            show_error "Unable to add non-Steam game. Is the file executable?"
+        fi
+        ;;
+    *)
+        show_error "Unsupported file type: $mime"
+        ;;
+esac

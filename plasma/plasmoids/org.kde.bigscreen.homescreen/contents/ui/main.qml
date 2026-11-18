@@ -1,0 +1,305 @@
+// SPDX-FileCopyrightText: 2015 Marco Martin <mart@kde.org>
+// SPDX-FileCopyrightText: 2019 Aditya Mehra <aix.m@outlook.com>
+// SPDX-FileCopyrightText: 2025 Devin Lin <devin@kde.org>
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls as Controls
+import QtQuick.Window
+import Qt5Compat.GraphicalEffects
+import org.kde.taskmanager as TaskManager
+
+import org.kde.plasma.plasmoid
+import org.kde.plasma.core as PlasmaCore
+import org.kde.kquickcontrolsaddons
+import org.kde.private.biglauncher
+import org.kde.bigscreen.controllerhandler as ControllerHandler
+import org.kde.bigscreen.shell as BigscreenShell
+import org.kde.bigscreen as Bigscreen
+
+import "launcher"
+import "homeoverlay"
+import "search" as Search
+
+ContainmentItem {
+    id: root
+    Layout.minimumWidth: Screen.desktopAvailableWidth
+    Layout.minimumHeight: Screen.desktopAvailableHeight * 0.6
+
+    property Item wallpaper
+
+    function configureWallpaper() {
+        Plasmoid.internalAction("configure").trigger();
+    }
+
+    function activateHome() {
+        if (homeOverlayWindow.visible) {
+            homeOverlayWindow.hideOverlay();
+        } else {
+            homeOverlayWindow.showOverlay();
+        }
+    }
+
+    // Action for when Meta key is pressed
+    Plasmoid.onActivated: {
+        root.activateHome();
+    }
+
+    Connections {
+        target: BigLauncherDbusAdapterInterface
+
+        function onActivateWallpaperSelectorRequested() {
+            root.configureWallpaper();
+        }
+
+        // Sync D-Bus configuration changes to Plasmoid.configuration
+        function onUseColoredTilesChanged(coloredTiles) {
+            Plasmoid.configuration.coloredTiles = coloredTiles;
+        }
+        function onUseWallpaperBlurChanged(wallpaperBlur) {
+            Plasmoid.configuration.wallpaperBlur = wallpaperBlur;
+        }
+        function onShowRecentChanged(showRecent) {
+            Plasmoid.configuration.showRecent = showRecent;
+        }
+        function onShowApplicationsChanged(showApplications) {
+            Plasmoid.configuration.showApplications = showApplications;
+        }
+        function onShowGamesChanged(showGames) {
+            Plasmoid.configuration.showGames = showGames;
+        }
+    }
+
+    Connections {
+        target: Shortcuts
+
+        function onToggleHomeScreen() {
+            if (homeOverlayWindow.visible) {
+                homeOverlayWindow.hideOverlay();
+            }
+            if (searchWindow.visible) {
+                searchWindow.hideOverlay();
+            }
+            if (favsManagerWindowView.visible) {
+                favsManagerWindowView.hideOverlay();
+            }
+            tasksModel.minimizeAllTasks();
+            homeScreen.focusLauncher();
+        }
+
+        function onToggleSearch() {
+            if (searchWindow.visible) {
+                searchWindow.hideOverlay();
+            } else {
+                searchWindow.showOverlay();
+            }
+        }
+    }
+
+    Connections {
+        target: Plasmoid
+
+        function onOpenTasksRequested() {
+            homeOverlayWindow.showOverlay();
+            homeOverlayWindow.openTasks();
+        }
+
+        function onOpenSearchRequested() {
+            searchWindow.showOverlay();
+        }
+
+        function onOpenHomeOverlayRequested() {
+            homeOverlayWindow.showOverlay();
+        }
+
+        function onMinimizeAllTasksRequested() {
+            tasksModel.minimizeAllTasks();
+        }
+    }
+
+    Connections {
+        target: ControllerHandler.ControllerHandlerStatus
+
+        function onHomeActionRequested() {
+            root.activateHome();
+        }
+
+        function onSdlControllerAdded(name) {
+            Plasmoid.showOSD(i18n("Controller added: %1", name), "input-gamepad-symbolic");
+        }
+
+        function onSdlControllerRemoved(name) {
+            Plasmoid.showOSD(i18n("Controller removed: %1", name), "input-gamepad-symbolic");
+        }
+
+        function onCecControllerAdded(name) {
+            Plasmoid.showOSD(i18n("Remote added: %1", name), "input-tvremote-symbolic");
+        }
+
+        function onCecControllerRemoved(name) {
+            Plasmoid.showOSD(i18n("Remote removed: %1", name), "input-tvremote-symbolic");
+        }
+
+        function onInputSuppressedChanged(suppressed, automatic) {
+            const systemTakingOver = i18n("System taking over controller input");
+            if (automatic) {
+                if (suppressed) {
+                    Plasmoid.showOSD(i18n("Application taking over controller input"), "input-gamepad-symbolic");
+                } else {
+                    Plasmoid.showOSD(systemTakingOver, "input-gamepad-symbolic");
+                }
+            }
+        }
+    }
+
+    // Trigger home overlay for back action
+    Bigscreen.BackHandler.onActivated: {
+        Bigscreen.NavigationRumble.playNavigationRumble();
+        if (homeScreen.handleBack()) {
+            return;
+        }
+        homeOverlayWindow.showOverlay();
+    }
+
+    Containment.onAppletAdded: (applet, x, y) => {
+        addApplet(applet, x, y);
+    }
+
+    PowerManagementItem {
+        id: pmInhibitItem
+        inhibit: BigscreenShell.Settings.pmInhibitionEnabled
+    }
+
+    Component.onCompleted: {
+        for (var i in Plasmoid.applets) {
+            root.addApplet(Plasmoid.applets[i], -1, -1)
+        }
+    }
+
+    function addApplet(applet, x, y) {
+        print("Applet added: " + applet + " " + applet.title)
+        var container = appletContainerComponent.createObject(appletsLayout)
+
+        const appletItem = root.itemFor(applet);
+        appletItem.parent = container;
+        container.applet = appletItem;
+        appletItem.anchors.fill = container;
+        appletItem.visible = true;
+        appletItem.expanded = false;
+    }
+
+    Component {
+        id: appletContainerComponent
+        Item {
+            property Item applet
+            visible: applet && applet.status !== PlasmaCore.Types.HiddenStatus && applet.status !== PlasmaCore.Types.PassiveStatus
+            Layout.fillHeight: true
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+        }
+    }
+
+    TaskManager.TasksModel {
+        id: tasksModel
+        filterByVirtualDesktop: false
+        filterByActivity: false
+        filterNotMaximized: false
+        filterByScreen: false
+        filterHidden: true
+        groupMode: TaskManager.TasksModel.GroupDisabled
+
+        function minimizeAllTasks() {
+            for (var i = 0; i < tasksModel.count; i++) {
+                const idx = tasksModel.makeModelIndex(i);
+                if (!tasksModel.data(idx, TaskManager.AbstractTasksModel.IsMinimized)) {
+                    tasksModel.requestToggleMinimized(idx);
+                }
+            }
+        }
+    }
+
+    // Shell windows
+    StartupFeedbackWindow {
+        id: feedbackWindow
+    }
+
+    Search.SearchWindow {
+        id: searchWindow
+    }
+
+    FavoritesManager {
+        id: favsManagerWindowView
+    }
+
+    HomeOverlayWindow {
+        id: homeOverlayWindow
+
+        onMinimizeAllTasksRequested: tasksModel.minimizeAllTasks()
+        onSearchRequested: Plasmoid.openSearch()
+        onSettingsRequested: Plasmoid.openSettings()
+    }
+
+    // Homescreen background - only loaded when wallpaperBlur setting is enabled
+    Loader {
+        id: wallpaperBlurLoader
+        anchors.fill: parent
+        active: Plasmoid.configuration.wallpaperBlur
+
+        sourceComponent: Item {
+            id: wallpaperBlur
+            anchors.fill: parent
+
+            readonly property real downscale: 4
+
+            // Only take samples from wallpaper when we need the blur for performance
+            ShaderEffectSource {
+                id: controlledWallpaperSource
+                width: blur.width
+                height: blur.height
+                textureSize: Qt.size(width, height)
+
+                sourceItem: Plasmoid.wallpaperGraphicsObject
+                live: homeScreen.blurBackground
+                hideSource: false
+                visible: false
+            }
+
+            // Wallpaper blur
+            // We attempted to use MultiEffect in the past, but it had very poor performance
+            FastBlur {
+                id: blur
+                radius: 50 / wallpaperBlur.downscale
+                cached: true
+                source: controlledWallpaperSource
+                width: Math.ceil(parent.width / wallpaperBlur.downscale)
+                height: Math.ceil(parent.height / wallpaperBlur.downscale)
+                transformOrigin: Item.TopLeft
+                scale: wallpaperBlur.downscale
+                visible: true // Don't load and unload, which is laggy
+                opacity: homeScreen.blurBackground ? 1 : 0
+
+                Behavior on opacity { NumberAnimation { duration: 500 } }
+            }
+        }
+    }
+
+    // Background darken scrim
+    Rectangle {
+        anchors.fill: parent
+        opacity: homeScreen.darkenBackground ? 1 : 0.75
+        Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.OutCubic; } }
+
+        gradient: Gradient {
+            GradientStop { position: 0; color: Qt.rgba(0, 0, 0, 0.45) }
+            GradientStop { position: 0.4; color: Qt.rgba(0, 0, 0, 0.55) }
+            GradientStop { position: 1; color: Qt.rgba(0, 0, 0, 0.85) }
+        }
+    }
+
+    // The homescreen's contents
+    HomeScreen {
+        id: homeScreen
+        anchors.fill: parent
+    }
+}
