@@ -72,7 +72,7 @@ NextGen_plasmabigscreen/
 ├── desktop/                                 # .desktop launchers & @HOME@ templates
 ├── tests/
 │   └── test_tv_display_mode.py              # Unit tests for mode policy, debouncing & auto-pause
-└── docs/                                    # Architecture, streaming, remote/CEC & operations guides
+└── docs/                                    # Architecture, streaming, remote/CEC, How-To & AI prompts
 ```
 
 ---
@@ -132,4 +132,6 @@ bash -n install.sh rollback-tv-setup.sh bin/tv-session-switch.sh bin/tv-display-
 - [Streaming Apps Guide](docs/02-Streaming-Apps-Guide.md)
 - [Remote Controls & HDMI-CEC](docs/03-Remote-Controls-and-HDMI-CEC.md)
 - [Operations & Rollback Runbook](docs/04-Operations-and-Rollback-Runbook.md)
+- [Complete Setup How-To Guide](docs/05-Complete-Setup-HowTo.md)
+- [AI Agent & Multi-Model Prompt Library](docs/06-AI-Agent-Prompts.md)
 - Licensed under **GPL-2.0-or-later** (see [LICENSE](LICENSE)) in compliance with KDE Plasma Bigscreen QML derivatives.
