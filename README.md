@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="NextGen Plasma Bigscreen — Android TV Experience on Native Linux" width="100%">
+</p>
+
 # NextGen Plasma Bigscreen
 
 **KDE Plasma Bigscreen customized to replicate an Android TV / Google TV experience on native Linux.**
@@ -39,6 +43,8 @@ NextGen_plasmabigscreen/
 ├── .gitignore
 ├── LICENSE                                  # GPL-2.0-or-later
 ├── README.md
+├── assets/
+│   └── banner.jpg                           # Repository hero banner graphic
 ├── install.sh                               # Idempotent user-space installer (--help, --dry-run)
 ├── rollback-tv-setup.sh                     # Full user-space rollback script
 ├── bin/
