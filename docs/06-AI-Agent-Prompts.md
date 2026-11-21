@@ -1,47 +1,32 @@
 # 06 — AI Agent & Multi-Model Prompt Library
 
-Use these copy-paste prompts with **any AI coding assistant or LLM** (Claude, ChatGPT, Gemini, Codex, Cursor, Copilot, Antigravity, or local coding models) to audit your hardware, adapt this repository to a different TV/GPU/remote, customize the Plasma Bigscreen QML UI, or debug issues.
+Use these copy-paste prompts with **any AI coding assistant or LLM** (Claude Code, Codex, Gemini CLI, Antigravity, Cursor, OpenCode, Copilot, or local coding models) to set up this repository on your hardware, customize the Plasma Bigscreen QML UI, extend `tv-display-mode`, or debug issues.
+
+> **Looking for single-shot, end-to-end setup?**
+> Use the canonical setup prompt in **[`SETUP_PROMPT.md`](../SETUP_PROMPT.md)** (raw URL: `https://raw.githubusercontent.com/nissifield/NextGen_plasmabigscreen/main/SETUP_PROMPT.md`):
+>
+> ```text
+> Fetch and follow https://raw.githubusercontent.com/nissifield/NextGen_plasmabigscreen/main/SETUP_PROMPT.md to inspect my Linux machine, adapt NextGen_plasmabigscreen to my hardware, install it into $HOME, and verify it end-to-end.
+> ```
 
 ---
 
 ## 1. Hardware Discovery & Compatibility Audit (Read-Only)
 
-Paste this first when setting up on a new PC/TV so the model inspects your exact system before changing anything:
+For a **read-only** hardware audit without installing anything yet, ask your agent to run **Phase 1 & Phase 2** of [`SETUP_PROMPT.md`](../SETUP_PROMPT.md):
 
 ```text
-Inspect this Linux machine (read-only — do NOT edit any files or change display modes yet) to prepare it for NextGen_plasmabigscreen:
-
-1. Session & Display:
-   - Check $XDG_SESSION_TYPE, $WAYLAND_DISPLAY, `kscreen-doctor -o`, and `/sys/class/drm/*/status` + `edid-decode` (if available) to identify the active TV connector, preferred EDID mode, and max supported 4K/1080p refresh rates.
-2. GPU & Hardware Video Decode:
-   - Run `lspci -k | grep -A3 -iE 'vga|display|3d'` and `vainfo` to identify the GPU vendor/driver (e.g. Intel iHD vs i965, AMD radeonsi, NVIDIA) and supported VA-API codecs.
-3. Installed Apps & Flatpaks:
-   - List installed Flatpaks (`flatpak list`), Steam install type (native/flatpak/gamescope), and check `flatpak override --user --show` for Stremio, VacuumTube, Jellyfin Desktop, Haruna, and Firefox.
-4. Remotes, Controllers & CEC:
-   - Check `lsusb`, `/proc/bus/input/devices`, `/dev/cec*`, `wpctl status`, and whether `plasma-bigscreen` / `plasma-bigscreen-inputhandler` is installed.
-
-Summarize every difference between my hardware and the repo defaults (`DP-1`, `3840x2160@30`, Intel `iHD`, USB remote `620a:0407`, `/dev/cec0`) and propose exact edits before applying anything.
+Read SETUP_PROMPT.md (or fetch https://raw.githubusercontent.com/nissifield/NextGen_plasmabigscreen/main/SETUP_PROMPT.md) and execute ONLY Phase 1 (Read-Only Discovery) and Phase 2 (Hardware Delta Summary). Do NOT install packages, edit any files, or change display modes yet.
 ```
 
 ---
 
-## 2. Adapt `NextGen_plasmabigscreen` to Your Hardware
+## 2. Full Hardware Adaptation, Install & Verification
 
-Use after running Prompt 1 (fill in your connector/GPU/remote details, or run in the same session):
+To clone, adapt configs for your TV connector/GPU/distro/remote, install declaratively into `$HOME`, and verify end-to-end, follow [`SETUP_PROMPT.md`](../SETUP_PROMPT.md) in full:
 
 ```text
-Adapt this clone of NextGen_plasmabigscreen and install it into $HOME for my specific hardware:
-- TV connector from `kscreen-doctor -o`: <CONNECTOR, e.g. HDMI-A-1>
-- Desired Movie Mode resolution & Hz: <e.g. 3840x2160 @ 60.0 or 30.0>
-- Desired Gaming/Desktop resolution & Hz: <e.g. 1920x1080 @ 60.0>
-- GPU / VA-API driver: <e.g. Intel iHD / AMD radeonsi / NVIDIA>
-- USB remote Vendor:Product ID (if using tv-remote-keymap.py): <e.g. 620a:0407 or none>
-
-Requirements:
-1. Update `configs/tv-display-mode/config.json` (and keep `auto_4k_video_switch: false` unless I ask otherwise, with Steam 1080p priority and `auto_pause_background_media: true` enabled).
-2. Adjust Flatpak VA-API overrides and `configs/environment.d/` / `configs/vacuumtube/flags.txt` to match my GPU (do not force Intel `iHD` on AMD/NVIDIA).
-3. Update `bin/tv-remote-keymap.py` only if I have a matching USB remote; otherwise skip or disable `tv-remote-keymap.service`.
-4. Preview with `./install.sh --dry-run` first, then run `./install.sh`, verify `tests/test_tv_display_mode.py`, and confirm `tv-display-mode status` and `isScriptLoaded("tv-display-mode")`.
+Read and follow SETUP_PROMPT.md in this repository (Phases 1 through 4) to inspect my machine, confirm my hardware/app choices, adapt NextGen_plasmabigscreen to my setup, install into $HOME, and verify it end-to-end.
 ```
 
 ---

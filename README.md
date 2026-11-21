@@ -6,7 +6,27 @@
 
 **KDE Plasma Bigscreen customized to replicate an Android TV / Google TV experience on native Linux.**
 
-Built for immutable atomic Linux desktops (tested on **Bazzite / Fedora Kinoite 45 with KDE Plasma 6.8.2 Wayland**) without modifying `/usr` or layering OS packages—everything lives declaratively in `$HOME` (`~/.local/`, `~/.config/`, and systemd user services).
+Built for **KDE Plasma 6.x Wayland** and immutable atomic Linux desktops (tested on **Bazzite / Fedora Kinoite with KDE Plasma 6 Wayland**) without modifying `/usr`—once the base `plasma-bigscreen` package is installed from your distro, every NextGen customization lives declaratively in `$HOME` (`~/.local/`, `~/.config/`, and systemd user services).
+
+---
+
+## Set Up With Your AI Agent
+
+Use **Claude Code, Codex, Gemini CLI, Antigravity, Cursor, OpenCode**, or any coding agent to inspect your hardware, adapt configs for your TV/GPU/distro, install safely into `$HOME`, and verify everything end-to-end.
+
+Paste this into your AI coding agent:
+
+```text
+Fetch and follow https://raw.githubusercontent.com/nissifield/NextGen_plasmabigscreen/main/SETUP_PROMPT.md to inspect my Linux machine, adapt NextGen_plasmabigscreen to my hardware, install it into $HOME, and verify it end-to-end.
+```
+
+Already cloned the repo locally? Paste instead:
+
+```text
+Read and follow SETUP_PROMPT.md in this repository to inspect my Linux machine, adapt NextGen_plasmabigscreen to my hardware, install it into $HOME, and verify it end-to-end.
+```
+
+> See [SETUP_PROMPT.md](SETUP_PROMPT.md) for the full self-service prompt, or follow the manual [Quick Start](#quick-start) / [Complete Setup How-To Guide](docs/05-Complete-Setup-HowTo.md).
 
 ---
 
@@ -43,6 +63,7 @@ NextGen_plasmabigscreen/
 ├── .gitignore
 ├── LICENSE                                  # GPL-2.0-or-later
 ├── README.md
+├── SETUP_PROMPT.md                          # Single-shot AI agent setup & hardware-adaptation prompt
 ├── assets/
 │   └── banner.jpg                           # Repository hero banner graphic
 ├── install.sh                               # Idempotent user-space installer (--help, --dry-run)
@@ -81,7 +102,7 @@ NextGen_plasmabigscreen/
 
 ### 1. Preview Installation (`--dry-run`)
 ```bash
-git clone git@github.com:nissifield/NextGen_plasmabigscreen.git
+git clone https://github.com/nissifield/NextGen_plasmabigscreen.git
 cd NextGen_plasmabigscreen
 ./install.sh --help
 ./install.sh --dry-run
@@ -128,6 +149,7 @@ bash -n install.sh rollback-tv-setup.sh bin/tv-session-switch.sh bin/tv-display-
 
 ## Documentation & License
 
+- [AI Agent Self-Service Setup Prompt](SETUP_PROMPT.md)
 - [Architecture & UI Design](docs/01-Architecture-and-UI-Design.md)
 - [Streaming Apps Guide](docs/02-Streaming-Apps-Guide.md)
 - [Remote Controls & HDMI-CEC](docs/03-Remote-Controls-and-HDMI-CEC.md)

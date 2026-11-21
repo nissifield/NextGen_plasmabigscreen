@@ -2,19 +2,22 @@
 
 This guide walks you through installing, adapting, and verifying **NextGen Plasma Bigscreen** on your own Linux living-room HTPC—from checking your hardware capabilities to customizing display timings, GPU acceleration, remotes, and streaming apps.
 
+> **Prefer automated AI-assisted setup?** Point your AI coding agent (Claude Code, Codex, Gemini CLI, Antigravity, Cursor, OpenCode, etc.) at [`SETUP_PROMPT.md`](../SETUP_PROMPT.md) (`https://raw.githubusercontent.com/nissifield/NextGen_plasmabigscreen/main/SETUP_PROMPT.md`) to handle discovery, adaptation, installation, and verification automatically.
+
 ---
 
 ## 1. Prerequisites
 
 ### Supported System
 - **OS:** Atomic/immutable Fedora Kinoite / Bazzite (`bazzite-deck` or KDE spin) or any standard **KDE Plasma 6 Wayland** distribution.
-- **Session:** Logged into KDE Plasma Wayland (`XDG_SESSION_TYPE=wayland`). Everything installs into `$HOME` with **no `sudo` required** and no `/usr` edits.
+- **Base `plasma-bigscreen` Package:** Must be installed from your distro first before running the user-space installer (for example: `rpm-ostree install plasma-bigscreen plasma-bigscreen-wayland` + reboot on Bazzite/Fedora Kinoite; `sudo dnf install plasma-bigscreen` on Fedora; `sudo pacman -S plasma-bigscreen` on Arch; `sudo zypper install plasma6-bigscreen` on openSUSE).
+- **Session:** Logged into KDE Plasma Wayland (`XDG_SESSION_TYPE=wayland`). Once `plasma-bigscreen` is present, all NextGen customizations install cleanly into `$HOME` with **no `sudo` required** and no `/usr` edits.
 - **Core CLI Tools:**
-  - `python3`, `gcc`, `git`, `bash`, `kscreen-doctor`, `busctl` / `qdbus`, `systemctl --user`, `desktop-file-validate`
-  - Optional: `vainfo` (verify VA-API), `cec-ctl` (clear tunneled `cec-DP-*` adapters), `udevadm` (remote hotplug), `ffprobe` (optional video probing)
+  - `python3`, `git`, `bash`, `kscreen-doctor`, `busctl` / `qdbus-qt6`, `systemctl --user`, `desktop-file-validate`
+  - Optional: `gcc` (only needed to compile the Stremio `libmpv` VA-API preload shim), `bwrap` (only needed for tunneled `cec-DP-*` isolation in `plasma-bigscreen-inputhandler.service`), `vainfo` (verify VA-API), `cec-ctl` (clear tunneled `cec-DP-*` adapters), `udevadm` (remote hotplug), `ffprobe` (optional video probing)
 
 ### Recommended Flatpak Streaming Apps
-Install the living-room apps you want from Flathub (or via `ujust get-media-app` on Bazzite):
+Install the living-room apps you want from Flathub:
 ```bash
 flatpak install flathub \
   rocks.shy.VacuumTube \
@@ -44,8 +47,8 @@ lspci -k | grep -A3 -iE 'vga|display|3d'
 vainfo
 ```
 - **Intel Gen 9.5+ (Coffee Lake / UHD 630, Iris Xe, Arc):** Uses `iHD` (`intel-media-driver`). Keep `LIBVA_DRIVER_NAME=iHD` and VacuumTube's `--disable-features=Vulkan` + `--use-webgpu-adapter=opengles`.
-- **AMD Radeon (AMDGPU):** Uses `radeonsi` (`mesa-va-drivers`). After installing, remove `LIBVA_DRIVER_NAME=iHD` from Flatpak overrides and `~/.config/environment.d/90-intel-vaapi.conf`.
-- **NVIDIA:** Uses proprietary NVDEC / `nvidia-vaapi-driver` rather than Intel `iHD`.
+- **AMD Radeon (AMDGPU):** Uses `radeonsi` (`mesa-va-drivers`). After installing, remove `LIBVA_DRIVER_NAME=iHD` from all Flatpak overrides in `~/.local/share/flatpak/overrides/` (including `org.mozilla.firefox`, `rocks.shy.VacuumTube`, `com.stremio.Stremio`, `org.jellyfin.JellyfinDesktop`, and `org.kde.haruna`) and do not install `~/.config/environment.d/90-intel-vaapi.conf`.
+- **NVIDIA:** Uses proprietary NVDEC / `nvidia-vaapi-driver` rather than Intel `iHD`. Remove `LIBVA_DRIVER_NAME=iHD` from all Flatpak overrides (including `org.mozilla.firefox`), skip `90-intel-vaapi.conf`, and set `HardwareDecoding=auto-safe` in Haruna if `nvidia-vaapi-driver` is not configured.
 
 ### C. Check Your USB Remote & CEC Devices
 ```bash
