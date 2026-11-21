@@ -1,6 +1,6 @@
 --ignore-gpu-blocklist
 --enable-gpu-rasterization
 --enable-zero-copy
---enable-features=VaapiVideoDecodeLinuxGL,VaapiIgnoreDriverChecks,AcceleratedVideoDecoder,AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL
+--enable-features=VaapiIgnoreDriverChecks
 --disable-features=Vulkan
---use-vulkan=disabled
+--use-webgpu-adapter=opengles

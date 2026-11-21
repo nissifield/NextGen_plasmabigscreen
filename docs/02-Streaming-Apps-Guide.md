@@ -9,7 +9,7 @@ NextGen Plasma Bigscreen configures 10-foot living-room Flatpak media apps with 
 **VacuumTube** wraps the official YouTube Leanback TV interface (`https://www.youtube.com/tv`) in Electron with built-in adblocking, SponsorBlock, Return YouTube Dislike, and gamepad/remote navigation.
 
 - **Wayland & Intel VA-API Flags (`~/.var/app/rocks.shy.VacuumTube/config/VacuumTube/flags.txt`):**
-  - Uses Ozone Wayland and disables Vulkan (`--use-vulkan=disabled`) to prevent VA-API `vkAllocateMemory` failures on older Intel GPUs while preserving smooth 4K hardware playback.
+  - Uses native Ozone Wayland + EGL/VA-API zero-copy GL (`AcceleratedVideoDecodeLinuxGL` / `AcceleratedVideoDecodeLinuxZeroCopyGL` enabled by VacuumTube when `hardware_decoding: true`, plus `VaapiIgnoreDriverChecks`) and disables Vulkan compositing and Dawn Vulkan probing (`--disable-features=Vulkan`, `--use-webgpu-adapter=opengles`) to avoid Chromium Wayland/Vulkan errors and Intel Gen 9.5 driver issues while preserving smooth 4K hardware playback.
 - **Flatpak Override (`~/.local/share/flatpak/overrides/rocks.shy.VacuumTube`):**
   - `sockets=!fallback-x11;wayland;!x11;` and `LIBVA_DRIVER_NAME=iHD`.
 - **Navigation:** Arrow keys / D-Pad scrub & browse; `Enter`/`OK` plays/pauses; `Escape`/`Backspace` goes back.

@@ -43,7 +43,7 @@ Look for the connected output name (for example `DP-1`, `HDMI-A-1`, or `HDMI-A-2
 lspci -k | grep -A3 -iE 'vga|display|3d'
 vainfo
 ```
-- **Intel Gen 9.5+ (Coffee Lake / UHD 630, Iris Xe, Arc):** Uses `iHD` (`intel-media-driver`). Keep `LIBVA_DRIVER_NAME=iHD` and VacuumTube's `--use-vulkan=disabled`.
+- **Intel Gen 9.5+ (Coffee Lake / UHD 630, Iris Xe, Arc):** Uses `iHD` (`intel-media-driver`). Keep `LIBVA_DRIVER_NAME=iHD` and VacuumTube's `--disable-features=Vulkan` + `--use-webgpu-adapter=opengles`.
 - **AMD Radeon (AMDGPU):** Uses `radeonsi` (`mesa-va-drivers`). After installing, remove `LIBVA_DRIVER_NAME=iHD` from Flatpak overrides and `~/.config/environment.d/90-intel-vaapi.conf`.
 - **NVIDIA:** Uses proprietary NVDEC / `nvidia-vaapi-driver` rather than Intel `iHD`.
 

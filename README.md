@@ -27,7 +27,7 @@ Built for immutable atomic Linux desktops (tested on **Bazzite / Fedora Kinoite 
   - Ignores OSDs, notifications, transient popups, Polkit auth dialogs, and `fallback`/`init` states, and never calls `Play()` automatically when refocusing a paused app.
 - **Hardware Video Acceleration & Streaming App Ergonomics**
   - **Stremio (`stremio/stremio_mpv_shim.c`):** Lightweight `LD_PRELOAD` shim for `libmpv.so` enforcing `config=yes`, `hwdec=auto-safe`, and `hwdec-codecs=all` so embedded libmpv honors VA-API (`stremio/mpv.conf`).
-  - **VacuumTube (YouTube TV):** Wayland-first Electron flags with Vulkan disabled (`--use-vulkan=disabled`) to avoid Intel Gen 9.5 VA-API driver crashes.
+  - **VacuumTube (YouTube TV):** Wayland-first Electron/Chromium flags disabling Vulkan compositing and Dawn Vulkan probing (`--disable-features=Vulkan`, `--use-webgpu-adapter=opengles`) so Intel Gen 9.5 uses clean EGL + VA-API zero-copy hardware decoding without Wayland/Vulkan errors.
   - **Jellyfin Desktop & Haruna:** Configured for VA-API hardware decoding out of the box.
 - **Controller, Remote Keymap & Desktop <-> Bigscreen Session Swapping**
   - **`bin/tv-session-switch.sh`:** Cleanly swaps between `org.kde.plasma.bigscreen` and standard `org.kde.plasma.desktop` in user-space, preserving custom blacklists and input handler settings across `plasma-bigscreen-envmanager`.

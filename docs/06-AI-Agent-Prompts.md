@@ -88,7 +88,7 @@ Audit hardware video decoding end-to-end (do not assume config flags mean VA-API
 2. Sandbox check: verify `flatpak override --user --show <app-id>` and test inside the Flatpak sandbox (`flatpak run --command=ffmpeg <app-id> ...` or `mpv --hwdec=auto-safe`).
 3. Live process verification: while a video is playing or the app is open, inspect `/proc/<pid>/maps` and `/proc/<pid>/fd` for `iHD_drv_video.so` (or `radeonsi_drv_video.so`), `libva*.so`, `/dev/dri/renderD128`, and `/dmabuf`, plus app/journal logs:
    - Stremio: check `stremio/stremio_mpv_shim.c` (`LD_PRELOAD`), `config=yes`, `hwdec=auto-safe`, and `MPV_RENDER_PARAM_WL_DISPLAY` behavior.
-   - VacuumTube: check `flags.txt` (`--disable-features=Vulkan`, `--use-vulkan=disabled`) and GPU process journal logs.
+   - VacuumTube: check `flags.txt` (`--disable-features=Vulkan`, `--use-webgpu-adapter=opengles`) and GPU process journal logs.
    - Jellyfin Desktop & Haruna: check `jellyfin-desktop.log` for `hwdec` property status and `haruna.conf`.
 
 Report exact observed maps, logs, and any fallback to software decoding, then fix and restart only the affected Flatpaks.
