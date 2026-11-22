@@ -160,6 +160,7 @@ if [ -f "$REPO_DIR/bin/nextgen_platform.py" ]; then
     install_file "$REPO_DIR/bin/nextgen_platform.py" "$HOME/.local/bin/nextgen_platform.py" 0755
 fi
 install_file "$REPO_DIR/bin/tv-display-mode.sh" "$HOME/tv-display-mode.sh" 0755
+install_file "$REPO_DIR/rollback-tv-setup.sh" "$HOME/rollback-tv-setup.sh" 0755
 
 for s in "$REPO_DIR/bin/streaming_scripts/"*; do
     [ -f "$s" ] || continue

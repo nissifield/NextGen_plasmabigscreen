@@ -133,6 +133,7 @@ class TestInstallerSafety(unittest.TestCase):
         # Core binaries & helpers
         self.assertTrue((self.home / ".local/bin/tv-display-mode").is_file())
         self.assertTrue((self.home / ".local/bin/nextgen-manifest.py").is_file())
+        self.assertTrue((self.home / "rollback-tv-setup.sh").is_file())
         self.assertTrue((self.home / ".config/tv-display-mode/config.json").is_file())
         self.assertTrue((self.home / ".local/share/plasma/plasmoids/org.kde.bigscreen.homescreen").is_dir())
         self.assertTrue((self.home / ".config/environment.d/90-intel-vaapi.conf").is_file())
