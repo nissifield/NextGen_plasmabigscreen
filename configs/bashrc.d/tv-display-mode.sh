@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shell helper functions for tv-display-mode (sourced via ~/.bashrc)
 
 tv-mode() {

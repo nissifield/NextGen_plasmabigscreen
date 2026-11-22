@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Toggle DP-1 between Movie Mode (4K @ 30Hz) and 1080p Mode (1080p @ 60Hz) with Bigscreen UI feedback."""
+"""Toggle display between Movie Mode (4K) and UI Mode (1080p) with Bigscreen UI feedback."""
+
+from __future__ import annotations
 
 import json
 import os
 import shutil
 import subprocess
 import sys
+from typing import Any
 
 
 TV_DISPLAY_MODE = os.path.expanduser("~/.local/bin/tv-display-mode")
@@ -14,7 +17,7 @@ if not os.path.exists(TV_DISPLAY_MODE):
 ICON_NAME = "video-television"
 
 
-def toggle_display_mode() -> dict:
+def toggle_display_mode() -> dict[str, Any]:
     proc = subprocess.run(
         [TV_DISPLAY_MODE, "toggle", "--json"],
         capture_output=True,
@@ -25,28 +28,121 @@ def toggle_display_mode() -> dict:
     return json.loads(proc.stdout)
 
 
-def format_feedback(result: dict) -> tuple[str, str, str]:
+def _format_hz(refresh_rate: Any) -> str:
+    if refresh_rate is None or refresh_rate == "":
+        return ""
+    try:
+        hz = float(refresh_rate)
+    except (TypeError, ValueError):
+        return ""
+    if hz <= 0:
+        return ""
+    if abs(hz - round(hz)) < 0.05:
+        return f"{int(round(hz))}Hz"
+    return f"{hz:.2f}Hz"
+
+
+def _extract_mode_details(result: dict[str, Any]) -> tuple[str, str, str]:
+    """Return (dimensions_text, hz_text, short_res_label) from applied/display payload."""
+    applied = result.get("applied") or {}
+    disp = result.get("display") or {}
+
+    size = applied.get("size") or disp.get("size")
+    refresh_rate = applied.get("refresh_rate")
+    if refresh_rate is None:
+        refresh_rate = disp.get("refresh_rate")
+    mode_name = str(applied.get("mode_name") or disp.get("current_mode_name") or "").strip()
+
+    width = 0
+    height = 0
+    if isinstance(size, dict):
+        try:
+            width = int(size.get("width") or 0)
+            height = int(size.get("height") or 0)
+        except (TypeError, ValueError):
+            width, height = 0, 0
+
+    dim = f"{width}x{height}" if (width > 0 and height > 0) else ""
+    hz = _format_hz(refresh_rate)
+
+    # Parse fallback dimensions/Hz from mode_name like "3840x2160@60" if structured fields omitted
+    if (not dim or not hz) and "@" in mode_name:
+        part_dim, part_hz = mode_name.split("@", 1)
+        if not dim and "x" in part_dim:
+            dim = part_dim.strip()
+        if not hz:
+            hz = _format_hz(part_hz.strip().rstrip("Hzhz"))
+
+    if width >= 3840 or height >= 2160:
+        short_label = "4K"
+    elif height > 0:
+        short_label = f"{height}p"
+    else:
+        short_label = ""
+
+    return dim, hz, short_label
+
+
+def format_feedback(result: dict[str, Any]) -> tuple[str, str, str]:
     dec = result.get("decision") or {}
     disp = result.get("display") or {}
-    output = str(disp.get("output") or "DP-1")
-    target = str(dec.get("target") or result.get("manual_mode") or "1080p")
-    reason = str(dec.get("reason") or "")
-    if target == "4k":
+    applied = result.get("applied") or {}
+
+    output = str(
+        applied.get("output")
+        or disp.get("output")
+        or "Display"
+    )
+    requested_target = str(dec.get("target") or result.get("manual_mode") or "1080p")
+    resolved_target = str(applied.get("resolved_target") or requested_target)
+    dec_reason = str(dec.get("reason") or "")
+    applied_reason = str(applied.get("reason") or "")
+    is_fallback = bool(applied.get("fallback", False))
+
+    dim, hz, short_label = _extract_mode_details(result)
+
+    if applied_reason == "display_unavailable" or (disp.get("error") and not applied.get("mode_id")):
+        err = str(applied.get("error") or disp.get("error") or "display unavailable")
         return (
-            "Movie Mode: 4K @ 30Hz",
+            "Display Unavailable",
+            "Display Unavailable",
+            f"{output}: {err}",
+        )
+
+    if dec_reason == "steam_priority":
+        mode_desc = f"{dim} @ {hz}" if (dim and hz) else (dim or "1920x1080 @ 60Hz")
+        label = short_label or "1080p"
+        return (
+            f"{label} Mode (Steam Priority)",
+            f"{label} Mode (Steam Priority)",
+            f"{output} stays at {mode_desc} while Steam is active",
+        )
+
+    if is_fallback and requested_target == "4k" and resolved_target != "4k":
+        mode_desc = f"{dim} @ {hz}" if (dim and hz) else (dim or "1920x1080 @ 60Hz")
+        label = short_label or "1080p"
+        return (
+            f"{label} Mode (4K Unavailable)",
+            "4K Mode Unavailable",
+            f"{output} stays at {mode_desc} (4K mode not advertised)",
+        )
+
+    if resolved_target == "4k":
+        mode_desc = f"{dim} @ {hz}" if (dim and hz) else (dim or "3840x2160")
+        osd = f"Movie Mode: 4K @ {hz}" if hz else "Movie Mode: 4K"
+        return (
+            osd,
             "Movie Mode",
-            f"{output} switched to 3840x2160 @ 30Hz",
+            f"{output} switched to {mode_desc}",
         )
-    if reason == "steam_priority":
-        return (
-            "1080p Mode (Steam Priority)",
-            "1080p Mode (Steam Priority)",
-            f"{output} stays at 1920x1080 @ 60Hz while Steam is active",
-        )
+
+    label = short_label or "1080p"
+    mode_desc = f"{dim} @ {hz}" if (dim and hz) else (dim or "1920x1080 @ 60Hz")
+    osd = f"{label} Mode: {label} @ {hz}" if hz else f"{label} Mode"
     return (
-        "1080p Mode: 1080p @ 60Hz",
-        "1080p Mode",
-        f"{output} switched to 1920x1080 @ 60Hz",
+        osd,
+        f"{label} Mode",
+        f"{output} switched to {mode_desc}",
     )
 
 

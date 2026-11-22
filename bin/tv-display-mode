@@ -18,13 +18,21 @@ import glob
 import json
 import logging
 import os
+import platform
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import time
 from typing import Any, Callable
 from urllib.parse import unquote, urlparse
+
+_BIN_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BIN_DIR not in sys.path:
+    sys.path.insert(0, _BIN_DIR)
+
+import nextgen_platform  # noqa: E402
 
 BUS_NAME = "org.nextgen.TvDisplayMode"
 BUS_PATH = "/org/nextgen/TvDisplayMode"
@@ -60,6 +68,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_pause_background_media": True,
     "title_4k_heuristic": True,
     "assume_4k_on_fullscreen_playback": [],
+    "steam_priority": True,
+    "steam_target_mode": "1080p",
 }
 
 VIDEO_EXTENSIONS = (
@@ -181,127 +191,184 @@ def _mode_score(
 def parse_kscreen_json(
     raw_json: str, output_name: str, cfg: dict[str, Any]
 ) -> dict[str, Any]:
-    """Parse `kscreen-doctor -j` output and resolve target mode IDs for `output_name`."""
-    data = json.loads(raw_json)
+    """
+    Parse `kscreen-doctor -j` output and resolve target mode IDs via `nextgen_platform`.
+
+    Supports explicit output names, `"auto"` output selection, disconnected/missing output
+    fallback, 1080p-only displays (`mode_4k = None`), 4K@30, 4K@60, and high-refresh modes
+    without crashing on unavailable modes.
+    """
+    try:
+        data = json.loads(raw_json)
+    except Exception as exc:
+        return {
+            "output": output_name,
+            "requested_output": output_name,
+            "output_fallback": False,
+            "selection_reason": "parse_error",
+            "available": False,
+            "enabled": False,
+            "connected": False,
+            "current_mode_id": "",
+            "current_mode": None,
+            "mode_4k": None,
+            "mode_1080p": None,
+            "mode_1080p_fallback": False,
+            "advertised_modes_count": 0,
+            "capabilities": {},
+            "error": f"Failed to parse kscreen-doctor JSON: {exc}",
+        }
+
     outputs = data.get("outputs") or []
-    target_out = None
-    for out in outputs:
-        if out.get("name") == output_name:
-            target_out = out
-            break
-    if target_out is None:
-        raise RuntimeError(f"Output {output_name!r} not found in kscreen-doctor -j")
+    sel = nextgen_platform.select_display_output(outputs, output_name)
+    if not sel["ok"] or sel["output"] is None:
+        return {
+            "output": sel.get("output_name") or output_name,
+            "requested_output": output_name,
+            "output_fallback": bool(sel.get("fallback", False)),
+            "selection_reason": sel.get("selection_reason", "no_connected_outputs"),
+            "available": False,
+            "enabled": False,
+            "connected": False,
+            "current_mode_id": "",
+            "current_mode": None,
+            "mode_4k": None,
+            "mode_1080p": None,
+            "mode_1080p_fallback": False,
+            "advertised_modes_count": 0,
+            "capabilities": {},
+            "error": sel.get("error") or f"Output {output_name!r} not found in kscreen-doctor -j",
+        }
 
-    modes = target_out.get("modes") or []
-    preferred_ids = {str(x) for x in (target_out.get("preferredModes") or [])}
-    current_id = str(target_out.get("currentModeId", ""))
-    current_mode = None
-    for m in modes:
-        if str(m.get("id", "")) == current_id:
-            current_mode = m
-            break
+    target_out = sel["output"]
+    modes_res = nextgen_platform.select_modes_for_output(target_out, cfg)
+    connected = bool(target_out.get("connected", True))
+    enabled = bool(target_out.get("enabled", True))
+    has_modes = bool(modes_res["mode_4k"] or modes_res["mode_1080p"] or modes_res["current_mode"])
+    available = connected and enabled and has_modes
 
-    m4k_cfg = cfg["mode_4k"]
-    m1080_cfg = cfg["mode_1080p"]
-
-    best_4k = None
-    best_4k_score = None
-    best_1080 = None
-    best_1080_score = None
-
-    for m in modes:
-        s4 = _mode_score(
-            m,
-            int(m4k_cfg["width"]),
-            int(m4k_cfg["height"]),
-            float(m4k_cfg["refresh_rate"]),
-            preferred_ids,
-        )
-        if s4 is not None and (best_4k_score is None or s4 < best_4k_score):
-            best_4k_score = s4
-            best_4k = m
-
-        # For 1080p@60, prefer lowest refresh diff then lowest numeric mode ID
-        s1080 = _mode_score(
-            m,
-            int(m1080_cfg["width"]),
-            int(m1080_cfg["height"]),
-            float(m1080_cfg["refresh_rate"]),
-            set(),
-        )
-        if s1080 is not None and (best_1080_score is None or s1080 < best_1080_score):
-            best_1080_score = s1080
-            best_1080 = m
-
-    if best_4k is None:
-        raise RuntimeError(f"4K mode not found on {output_name}")
-    if best_1080 is None:
-        raise RuntimeError(f"1080p@60 mode not found on {output_name}")
+    err = None
+    if not connected:
+        err = f"Output {sel['output_name']} is disconnected"
+    elif not enabled:
+        err = f"Output {sel['output_name']} is disabled (display may be suspended/asleep)"
+    elif not has_modes:
+        err = f"Output {sel['output_name']} reports no advertised display modes"
 
     return {
-        "output": output_name,
-        "enabled": bool(target_out.get("enabled", True)),
-        "connected": bool(target_out.get("connected", True)),
-        "current_mode_id": current_id,
-        "current_mode": current_mode,
-        "mode_4k": best_4k,
-        "mode_1080p": best_1080,
+        "output": sel["output_name"],
+        "requested_output": output_name,
+        "output_fallback": bool(sel["fallback"]),
+        "selection_reason": sel["selection_reason"],
+        "available": available,
+        "enabled": enabled,
+        "connected": connected,
+        "current_mode_id": modes_res["current_mode_id"],
+        "current_mode": modes_res["current_mode"],
+        "mode_4k": modes_res["mode_4k"],
+        "mode_1080p": modes_res["mode_1080p"],
+        "mode_1080p_fallback": bool(modes_res["mode_1080p_fallback"]),
+        "advertised_modes_count": modes_res["advertised_modes_count"],
+        "capabilities": modes_res["capabilities"],
+        "error": err,
     }
 
 
-def query_kscreen(output_name: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    """Run `kscreen-doctor -j` and return parsed output & resolved target mode info."""
+def _resolve_kscreen_bin(kscreen_bin: str | None = None) -> str:
+    if kscreen_bin:
+        return kscreen_bin
+    return shutil.which("kscreen-doctor") or "/usr/bin/kscreen-doctor"
+
+
+def query_kscreen_raw(kscreen_bin: str | None = None) -> tuple[str | None, str | None]:
+    """Run `kscreen-doctor -j` read-only and return `(stdout, error_message)`."""
+    exe = _resolve_kscreen_bin(kscreen_bin)
     env = resolve_session_env()
-    res = subprocess.run(
-        ["/usr/bin/kscreen-doctor", "-j"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
-    )
-    if res.returncode != 0:
-        raise RuntimeError(
-            f"kscreen-doctor -j failed ({res.returncode}): {res.stderr.strip()}"
+    try:
+        res = subprocess.run(
+            [exe, "-j"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
         )
-    return parse_kscreen_json(res.stdout, output_name, cfg)
+    except FileNotFoundError:
+        return None, f"kscreen-doctor binary not found ({exe})"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kscreen-doctor -j failed: {exc}"
+
+    if res.returncode != 0:
+        return None, f"kscreen-doctor -j failed ({res.returncode}): {res.stderr.strip()}"
+    return res.stdout, None
+
+
+def query_kscreen(
+    output_name: str,
+    cfg: dict[str, Any],
+    kscreen_bin: str | None = None,
+) -> dict[str, Any]:
+    """Run `kscreen-doctor -j` and return parsed output & resolved target mode info without crashing."""
+    raw, err = query_kscreen_raw(kscreen_bin=kscreen_bin)
+    if err is not None or raw is None:
+        return {
+            "output": output_name,
+            "requested_output": output_name,
+            "output_fallback": False,
+            "selection_reason": "kscreen_unavailable",
+            "available": False,
+            "enabled": False,
+            "connected": False,
+            "current_mode_id": "",
+            "current_mode": None,
+            "mode_4k": None,
+            "mode_1080p": None,
+            "mode_1080p_fallback": False,
+            "advertised_modes_count": 0,
+            "capabilities": {},
+            "error": err or "kscreen-doctor unavailable",
+        }
+    return parse_kscreen_json(raw, output_name, cfg)
 
 
 def is_already_target_mode(
     kscreen_info: dict[str, Any], target: str, cfg: dict[str, Any]
 ) -> bool:
     """Return True if output is already running the requested mode (avoids redundant calls)."""
+    if target not in {"4k", "1080p"}:
+        raise ValueError(f"Unknown target mode: {target!r}")
+    if not kscreen_info or kscreen_info.get("available") is False:
+        return False
+
     current_id = str(kscreen_info.get("current_mode_id", ""))
     current = kscreen_info.get("current_mode")
-    if target == "4k":
-        target_mode = kscreen_info["mode_4k"]
-        if current_id == str(target_mode.get("id", "")):
-            return True
-        if current:
-            sz = current.get("size") or {}
-            return (
-                int(sz.get("width", 0)) == int(cfg["mode_4k"]["width"])
-                and int(sz.get("height", 0)) == int(cfg["mode_4k"]["height"])
-                and abs(float(current.get("refreshRate", 0.0)) - float(cfg["mode_4k"]["refresh_rate"]))
-                <= 0.15
-            )
+    mode_key = "mode_4k" if target == "4k" else "mode_1080p"
+    target_mode = kscreen_info.get(mode_key)
+    if target_mode is None:
         return False
 
-    if target == "1080p":
-        target_mode = kscreen_info["mode_1080p"]
-        if current_id == str(target_mode.get("id", "")):
-            return True
-        if current:
-            sz = current.get("size") or {}
+    if current_id and current_id == str(target_mode.get("id", "")):
+        return True
+    if current:
+        cur_sz = current.get("size") or {}
+        tgt_sz = target_mode.get("size") or cfg.get(mode_key) or {}
+        tgt_w = int(tgt_sz.get("width", 0))
+        tgt_h = int(tgt_sz.get("height", 0))
+        raw_tgt_hz = target_mode.get("refreshRate")
+        if raw_tgt_hz is None:
+            raw_tgt_hz = (cfg.get(mode_key) or {}).get("refresh_rate", 0.0)
+        try:
+            tgt_hz = float(raw_tgt_hz)
+        except (TypeError, ValueError):
+            tgt_hz = 0.0
+        if tgt_w > 0 and tgt_h > 0:
+            hz_ok = tgt_hz <= 0.0 or abs(float(current.get("refreshRate", 0.0)) - tgt_hz) <= 0.15
             return (
-                int(sz.get("width", 0)) == int(cfg["mode_1080p"]["width"])
-                and int(sz.get("height", 0)) == int(cfg["mode_1080p"]["height"])
-                and abs(float(current.get("refreshRate", 0.0)) - float(cfg["mode_1080p"]["refresh_rate"]))
-                <= 0.15
+                int(cur_sz.get("width", 0)) == tgt_w
+                and int(cur_sz.get("height", 0)) == tgt_h
+                and hz_ok
             )
-        return False
-
-    raise ValueError(f"Unknown target mode: {target!r}")
+    return False
 
 
 def apply_display_mode(
@@ -309,58 +376,168 @@ def apply_display_mode(
     cfg: dict[str, Any],
     dry_run: bool = False,
     kscreen_info: dict[str, Any] | None = None,
+    kscreen_bin: str | None = None,
 ) -> dict[str, Any]:
-    """Switch DP-1 to `target` ('4k' or '1080p') unless already active."""
-    output_name = str(cfg["output"])
-    info = kscreen_info if kscreen_info is not None else query_kscreen(output_name, cfg)
-    target_mode = info["mode_4k"] if target == "4k" else info["mode_1080p"]
-    target_id = str(target_mode["id"])
+    """Switch active output to `target` ('4k' or '1080p') with graceful fallback if unavailable."""
+    configured_output = str(cfg.get("output") or "auto")
+    info = (
+        kscreen_info
+        if kscreen_info is not None
+        else query_kscreen(configured_output, cfg, kscreen_bin=kscreen_bin)
+    )
+    resolved = nextgen_platform.resolve_safe_target_mode(info, target, cfg)
+    output_name = str(info.get("output") or configured_output)
 
-    if is_already_target_mode(info, target, cfg):
+    if not resolved["ok"] or resolved["mode"] is None:
+        cur = info.get("current_mode") or {}
+        LOGGER.warning(
+            "Skipping display mode switch to %s on %s: %s",
+            target,
+            output_name,
+            resolved.get("error") or resolved.get("reason"),
+        )
         return {
             "changed": False,
             "target": target,
-            "mode_id": info["current_mode_id"],
-            "mode_name": (info.get("current_mode") or {}).get("name", ""),
+            "resolved_target": None,
+            "output": output_name,
+            "mode_id": str(info.get("current_mode_id") or ""),
+            "mode_name": str(cur.get("name") or ""),
+            "size": cur.get("size"),
+            "refresh_rate": cur.get("refreshRate"),
+            "fallback": True,
+            "reason": str(resolved.get("reason") or "display_unavailable"),
+            "error": resolved.get("error"),
             "dry_run": dry_run,
         }
 
-    cmd = ["/usr/bin/kscreen-doctor", f"output.{output_name}.mode.{target_id}"]
+    resolved_target = str(resolved["resolved_target"])
+    target_mode = resolved["mode"]
+    target_id = str(target_mode.get("id", ""))
+    is_fallback = bool(resolved.get("fallback", False))
+    resolve_reason = str(resolved.get("reason") or "exact_match")
+
+    already_active = str(info.get("current_mode_id") or "") == target_id
+    if not already_active and resolved_target in {"4k", "1080p"}:
+        already_active = is_already_target_mode(info, resolved_target, cfg)
+
+    if already_active:
+        cur = info.get("current_mode") or target_mode
+        return {
+            "changed": False,
+            "target": target,
+            "resolved_target": resolved_target,
+            "output": output_name,
+            "mode_id": str(info.get("current_mode_id") or target_id),
+            "mode_name": str(cur.get("name") or target_mode.get("name") or ""),
+            "size": cur.get("size") or target_mode.get("size"),
+            "refresh_rate": cur.get("refreshRate") if cur.get("refreshRate") is not None else target_mode.get("refreshRate"),
+            "fallback": is_fallback,
+            "reason": resolve_reason,
+            "dry_run": dry_run,
+        }
+
+    exe = _resolve_kscreen_bin(kscreen_bin)
+    cmd = [exe, f"output.{output_name}.mode.{target_id}"]
     if dry_run:
         return {
             "changed": True,
             "target": target,
+            "resolved_target": resolved_target,
+            "output": output_name,
             "mode_id": target_id,
-            "mode_name": target_mode.get("name", ""),
+            "mode_name": str(target_mode.get("name") or ""),
+            "size": target_mode.get("size"),
+            "refresh_rate": target_mode.get("refreshRate"),
+            "fallback": is_fallback,
+            "reason": resolve_reason,
             "command": " ".join(cmd),
             "dry_run": True,
         }
 
     env = resolve_session_env()
-    res = subprocess.run(
-        cmd,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=8,
-        check=False,
-    )
-    if res.returncode != 0:
-        raise RuntimeError(
-            f"Failed applying mode {target_id} on {output_name}: {res.stderr.strip()}"
+    try:
+        res = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
         )
+    except FileNotFoundError:
+        err = f"kscreen-doctor binary not found ({exe})"
+        LOGGER.error("Display switch skipped: %s", err)
+        return {
+            "changed": False,
+            "target": target,
+            "resolved_target": resolved_target,
+            "output": output_name,
+            "mode_id": str(info.get("current_mode_id") or ""),
+            "mode_name": str((info.get("current_mode") or {}).get("name") or ""),
+            "size": (info.get("current_mode") or {}).get("size"),
+            "refresh_rate": (info.get("current_mode") or {}).get("refreshRate"),
+            "fallback": True,
+            "reason": "display_unavailable",
+            "error": err,
+            "dry_run": False,
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        err = f"kscreen-doctor execution failed: {exc}"
+        LOGGER.error("Display switch failed: %s", err)
+        return {
+            "changed": False,
+            "target": target,
+            "resolved_target": resolved_target,
+            "output": output_name,
+            "mode_id": str(info.get("current_mode_id") or ""),
+            "mode_name": str((info.get("current_mode") or {}).get("name") or ""),
+            "size": (info.get("current_mode") or {}).get("size"),
+            "refresh_rate": (info.get("current_mode") or {}).get("refreshRate"),
+            "fallback": True,
+            "reason": "display_unavailable",
+            "error": err,
+            "dry_run": False,
+        }
+
+    if res.returncode != 0:
+        err = f"Failed applying mode {target_id} on {output_name}: {res.stderr.strip()}"
+        LOGGER.error(err)
+        return {
+            "changed": False,
+            "target": target,
+            "resolved_target": resolved_target,
+            "output": output_name,
+            "mode_id": str(info.get("current_mode_id") or ""),
+            "mode_name": str((info.get("current_mode") or {}).get("name") or ""),
+            "size": (info.get("current_mode") or {}).get("size"),
+            "refresh_rate": (info.get("current_mode") or {}).get("refreshRate"),
+            "fallback": True,
+            "reason": "apply_failed",
+            "error": err,
+            "dry_run": False,
+        }
+
     LOGGER.info(
-        "Switched %s to %s (mode id=%s, name=%s)",
+        "Switched %s to %s (resolved=%s, mode id=%s, name=%s, fallback=%s)",
         output_name,
         target,
+        resolved_target,
         target_id,
         target_mode.get("name", ""),
+        is_fallback,
     )
     return {
         "changed": True,
         "target": target,
+        "resolved_target": resolved_target,
+        "output": output_name,
         "mode_id": target_id,
-        "mode_name": target_mode.get("name", ""),
+        "mode_name": str(target_mode.get("name") or ""),
+        "size": target_mode.get("size"),
+        "refresh_rate": target_mode.get("refreshRate"),
+        "fallback": is_fallback,
+        "reason": resolve_reason,
         "dry_run": False,
     }
 
@@ -901,22 +1078,27 @@ def decide_target_mode(
     pid_ancestry_fn: Callable[[int], list[dict[str, Any]]] = get_pid_ancestry,
 ) -> dict[str, Any]:
     """
-    Pure decision function determining desired DP-1 mode ('4k' or '1080p') and reason.
+    Pure decision function determining desired display mode ('4k' or '1080p') and reason.
 
     Priority order:
-    1. Steam active/focused or fullscreen foreground -> '1080p' ('steam_priority')
+    1. If `steam_priority` is enabled (default True) and Steam is active/focused or fullscreen
+       foreground -> `steam_target_mode` (default '1080p') ('steam_priority')
     2. Manual override ('4k' or '1080p') -> requested mode
     3. Any active Playing 4K (>1080p) playback -> '4k' ('auto_4k_video')
     4. Default -> '1080p' ('auto_default_1080p')
     """
-    steam_hit, steam_detail = steam_is_active_or_foreground(kwin_state, pid_ancestry_fn)
-    if steam_hit:
-        return {
-            "target": "1080p",
-            "reason": "steam_priority",
-            "detail": steam_detail,
-            "immediate": True,
-        }
+    if bool(cfg.get("steam_priority", True)):
+        steam_hit, steam_detail = steam_is_active_or_foreground(kwin_state, pid_ancestry_fn)
+        if steam_hit:
+            steam_target = str(cfg.get("steam_target_mode") or "1080p").strip().lower()
+            if steam_target not in {"1080p", "4k"}:
+                steam_target = "1080p"
+            return {
+                "target": steam_target,
+                "reason": "steam_priority",
+                "detail": steam_detail,
+                "immediate": True,
+            }
 
     if manual_mode == "4k":
         return {
@@ -1327,6 +1509,7 @@ def run_daemon() -> int:
             self.last_kwin_push = 0.0
             self.playbacks: list[PlaybackInfo] = []
             self.last_decision: dict[str, Any] = {}
+            self.last_applied: dict[str, Any] = {}
             self.ffprobe_cache = FFprobeCache()
             self.debouncer = Debouncer(
                 debounce_to_4k_sec=float(cfg["debounce_to_4k_sec"]),
@@ -1340,10 +1523,11 @@ def run_daemon() -> int:
             # Seed debouncer with actual current mode on startup
             try:
                 ks = query_kscreen(str(cfg["output"]), cfg)
-                if is_already_target_mode(ks, "4k", cfg):
-                    self.debouncer.last_applied_target = "4k"
-                elif is_already_target_mode(ks, "1080p", cfg):
-                    self.debouncer.last_applied_target = "1080p"
+                if ks.get("available"):
+                    if is_already_target_mode(ks, "4k", cfg):
+                        self.debouncer.last_applied_target = "4k"
+                    elif is_already_target_mode(ks, "1080p", cfg):
+                        self.debouncer.last_applied_target = "1080p"
             except Exception as exc:
                 LOGGER.warning("Initial kscreen-doctor query failed: %s", exc)
 
@@ -1478,10 +1662,13 @@ def run_daemon() -> int:
                     GLib.source_remove(self._debounce_timer_id)
                     self._debounce_timer_id = None
                 try:
-                    apply_display_mode(apply_target, self.cfg, dry_run=False)
+                    applied = apply_display_mode(apply_target, self.cfg, dry_run=False)
+                    self.last_applied = applied
+                    if applied.get("error"):
+                        # Clear cached last_applied_target so next tick retries cleanly when display recovers
+                        self.debouncer.last_applied_target = None
                 except Exception as exc:
                     LOGGER.error("Display switch failed: %s", exc)
-                    # Clear cached last_applied_target so next tick retries
                     self.debouncer.last_applied_target = None
             elif retry_in is not None:
                 self._schedule_debounce_wakeup(retry_in)
@@ -1541,7 +1728,23 @@ def run_daemon() -> int:
             self.manual_mode = req
             write_persisted_manual_mode(req)
             decision = self.evaluate()
-            return json.dumps({"manual_mode": self.manual_mode, "decision": decision})
+            status_snapshot = build_status_payload(
+                self.cfg,
+                self.manual_mode,
+                self.kwin_state,
+                self.playbacks,
+                decision,
+                self.debouncer,
+                daemon_running=True,
+            )
+            return json.dumps(
+                {
+                    "manual_mode": self.manual_mode,
+                    "decision": decision,
+                    "display": status_snapshot.get("display") or {},
+                    "applied": self.last_applied,
+                }
+            )
 
         @dbus.service.method(BUS_IFACE, in_signature="", out_signature="s")
         def EvaluateNow(self) -> str:
@@ -1568,6 +1771,39 @@ def run_daemon() -> int:
     return 0
 
 
+def _summarize_kscreen(ks: dict[str, Any]) -> dict[str, Any]:
+    if not ks or ks.get("available") is False:
+        return {
+            "output": ks.get("output") if ks else None,
+            "available": False,
+            "connected": bool(ks.get("connected", False)) if ks else False,
+            "enabled": bool(ks.get("enabled", False)) if ks else False,
+            "mode_4k_available": False,
+            "error": (ks or {}).get("error") or "Display unavailable",
+        }
+    cur = ks.get("current_mode") or {}
+    m4k = ks.get("mode_4k")
+    m1080 = ks.get("mode_1080p")
+    return {
+        "output": ks["output"],
+        "available": True,
+        "connected": bool(ks.get("connected", True)),
+        "enabled": bool(ks.get("enabled", True)),
+        "output_fallback": bool(ks.get("output_fallback", False)),
+        "selection_reason": ks.get("selection_reason"),
+        "current_mode_id": ks["current_mode_id"],
+        "current_mode_name": cur.get("name", ""),
+        "refresh_rate": cur.get("refreshRate"),
+        "size": cur.get("size"),
+        "mode_4k_available": m4k is not None,
+        "mode_4k_id": m4k.get("id") if m4k else None,
+        "mode_4k_name": m4k.get("name") if m4k else None,
+        "mode_1080p_id": m1080.get("id") if m1080 else None,
+        "mode_1080p_name": m1080.get("name") if m1080 else None,
+        "capabilities": ks.get("capabilities") or {},
+    }
+
+
 def build_status_payload(
     cfg: dict[str, Any],
     manual_mode: str,
@@ -1576,27 +1812,20 @@ def build_status_payload(
     decision: dict[str, Any],
     debouncer: Debouncer | None = None,
     daemon_running: bool = False,
+    kscreen_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    kscreen_summary: dict[str, Any] = {}
     try:
-        ks = query_kscreen(str(cfg["output"]), cfg)
-        cur = ks.get("current_mode") or {}
-        kscreen_summary = {
-            "output": ks["output"],
-            "current_mode_id": ks["current_mode_id"],
-            "current_mode_name": cur.get("name", ""),
-            "refresh_rate": cur.get("refreshRate"),
-            "size": cur.get("size"),
-            "mode_4k_id": ks["mode_4k"]["id"],
-            "mode_1080p_id": ks["mode_1080p"]["id"],
-        }
+        ks = kscreen_info if kscreen_info is not None else query_kscreen(str(cfg["output"]), cfg)
+        kscreen_summary = _summarize_kscreen(ks)
     except Exception as exc:
-        kscreen_summary = {"error": str(exc)}
+        kscreen_summary = {"available": False, "error": str(exc)}
 
     active_win = (kwin_state or {}).get("active")
     return {
         "daemon_running": daemon_running,
         "manual_mode": manual_mode,
+        "steam_priority": bool(cfg.get("steam_priority", True)),
+        "steam_target_mode": str(cfg.get("steam_target_mode") or "1080p"),
         "auto_4k_video_switch": bool(cfg.get("auto_4k_video_switch", False)),
         "auto_pause_background_media": bool(cfg.get("auto_pause_background_media", True)),
         "display": kscreen_summary,
@@ -1605,6 +1834,181 @@ def build_status_payload(
         "active_window": active_win,
         "playbacks": [p.to_dict() for p in playbacks],
     }
+
+
+def _read_os_release() -> dict[str, str]:
+    info: dict[str, str] = {}
+    for path in ("/etc/os-release", "/usr/lib/os-release"):
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    if k in {"ID", "NAME", "PRETTY_NAME", "VERSION_ID", "VARIANT_ID"}:
+                        info[k.lower()] = v.strip().strip('"')
+            break
+        except OSError:
+            continue
+    return info
+
+
+def build_diagnose_payload(
+    cfg: dict[str, Any],
+    kscreen_raw: str | None = None,
+    kscreen_bin: str | None = None,
+    sys_pci_root: str = "/sys/bus/pci/devices",
+    vainfo_runner: Callable[[], tuple[int, str, str]] | None = None,
+    nvidia_smi_runner: Callable[[], tuple[int, str, str]] | None = None,
+    wpctl_runner: Callable[[], tuple[int, str, str]] | None = None,
+) -> dict[str, Any]:
+    """
+    Build a strictly read-only, sanitized diagnostic report covering OS/session,
+    GPU/VA-API, display outputs & advertised modes, HDMI audio summary, and config overrides.
+    """
+    gpus = nextgen_platform.detect_gpus(
+        sys_pci_root=sys_pci_root,
+        vainfo_runner=vainfo_runner,
+        nvidia_smi_runner=nvidia_smi_runner,
+    )
+    vaapi_env = nextgen_platform.recommended_vaapi_env(gpus)
+    hdmi_audio = nextgen_platform.inspect_hdmi_audio(wpctl_runner=wpctl_runner)
+
+    ks_err: str | None = None
+    raw_json = kscreen_raw
+    if raw_json is None:
+        raw_json, ks_err = query_kscreen_raw(kscreen_bin=kscreen_bin)
+
+    outputs_summary: list[dict[str, Any]] = []
+    selected_display: dict[str, Any] = {}
+    if raw_json:
+        ks_parsed = parse_kscreen_json(raw_json, str(cfg.get("output") or "auto"), cfg)
+        selected_display = _summarize_kscreen(ks_parsed)
+        try:
+            raw_obj = json.loads(raw_json)
+            for out in raw_obj.get("outputs") or []:
+                if not isinstance(out, dict):
+                    continue
+                modes_list = []
+                for m in out.get("modes") or []:
+                    if not isinstance(m, dict):
+                        continue
+                    sz = m.get("size") or {}
+                    modes_list.append(
+                        {
+                            "id": str(m.get("id", "")),
+                            "name": str(m.get("name", "")),
+                            "width": int(sz.get("width", 0) or 0),
+                            "height": int(sz.get("height", 0) or 0),
+                            "refresh_rate": m.get("refreshRate"),
+                        }
+                    )
+                mode_res = nextgen_platform.select_modes_for_output(out, cfg)
+                outputs_summary.append(
+                    {
+                        "name": str(out.get("name", "")),
+                        "connected": bool(out.get("connected", False)),
+                        "enabled": bool(out.get("enabled", False)),
+                        "current_mode_id": str(out.get("currentModeId", "")),
+                        "capabilities": mode_res["capabilities"],
+                        "advertised_modes": modes_list,
+                    }
+                )
+        except Exception as exc:
+            ks_err = f"Failed parsing kscreen-doctor JSON: {exc}"
+    else:
+        selected_display = {"available": False, "error": ks_err or "kscreen-doctor unavailable"}
+
+    config_overrides = {
+        k: v for k, v in cfg.items() if k not in DEFAULT_CONFIG or DEFAULT_CONFIG.get(k) != v
+    }
+
+    report = {
+        "read_only": True,
+        "os": {
+            "release": _read_os_release(),
+            "kernel": platform.release(),
+            "arch": platform.machine(),
+        },
+        "session": {
+            "xdg_session_type": os.environ.get("XDG_SESSION_TYPE", ""),
+            "xdg_current_desktop": os.environ.get("XDG_CURRENT_DESKTOP", ""),
+            "wayland_display": os.environ.get("WAYLAND_DISPLAY", ""),
+            "kscreen_doctor_available": bool(shutil.which("kscreen-doctor") or os.path.exists("/usr/bin/kscreen-doctor")),
+        },
+        "gpus": gpus,
+        "recommended_vaapi_env": vaapi_env,
+        "display_policy": {
+            "configured_output": cfg.get("output"),
+            "selected": selected_display,
+            "outputs": outputs_summary,
+            "kscreen_error": ks_err,
+        },
+        "hdmi_audio": hdmi_audio,
+        "config": {
+            "config_path": CONFIG_PATH,
+            "effective": cfg,
+            "overrides_from_default": config_overrides,
+        },
+    }
+    return nextgen_platform.sanitize_dict(report)
+
+
+def format_diagnose_text(report: dict[str, Any]) -> str:
+    os_info = (report.get("os") or {}).get("release") or {}
+    sess = report.get("session") or {}
+    gpus = report.get("gpus") or []
+    vaapi = report.get("recommended_vaapi_env") or {}
+    disp = report.get("display_policy") or {}
+    sel = disp.get("selected") or {}
+    audio = report.get("hdmi_audio") or {}
+    overrides = (report.get("config") or {}).get("overrides_from_default") or {}
+
+    lines = [
+        "=== NextGen Display & Platform Diagnostics (Read-Only) ===",
+        f"OS:       {os_info.get('pretty_name') or os_info.get('name') or 'Linux'} "
+        f"(kernel {(report.get('os') or {}).get('kernel', '?')})",
+        f"Session:  type={sess.get('xdg_session_type') or 'unknown'}, "
+        f"desktop={sess.get('xdg_current_desktop') or 'unknown'}, "
+        f"wayland={sess.get('wayland_display') or 'unset'}",
+        f"GPUs ({len(gpus)} detected):",
+    ]
+    if not gpus:
+        lines.append("  - none detected via /sys/bus/pci/devices")
+    for g in gpus:
+        lines.append(
+            f"  - [{g.get('pci_slot')}] vendor={g.get('vendor')} profile={g.get('profile')} "
+            f"driver={g.get('kernel_driver')} decode={','.join(g.get('decode_apis') or []) or 'none'}"
+        )
+        if g.get("drm_notes"):
+            lines.append(f"    Notes: {g['drm_notes']}")
+    lines.append(f"Recommended VA-API Env: {vaapi if vaapi else '(none - use system defaults)'}")
+    lines.append(
+        f"Selected Display: {sel.get('output') or 'none'} "
+        f"(available={sel.get('available')}, mode={sel.get('current_mode_name') or 'n/a'}, "
+        f"4k_available={sel.get('mode_4k_available')})"
+    )
+    if sel.get("error"):
+        lines.append(f"  Display Error: {sel['error']}")
+    for out in disp.get("outputs") or []:
+        caps = out.get("capabilities") or {}
+        lines.append(
+            f"  - Output {out['name']}: connected={out['connected']}, enabled={out['enabled']}, "
+            f"max={caps.get('max_resolution')}@{caps.get('max_refresh_rate')}Hz, "
+            f"modes={len(out.get('advertised_modes') or [])}"
+        )
+    lines.append(
+        f"HDMI Audio: available={audio.get('available')}, "
+        f"hdmi_sinks={len(audio.get('hdmi_sinks') or [])}, "
+        f"auto_configured={audio.get('auto_configured', False)}"
+    )
+    if audio.get("note"):
+        lines.append(f"  Audio Note: {audio['note']}")
+    lines.append(f"Config Overrides: {json.dumps(overrides) if overrides else 'none (using defaults)'}")
+    return "\n".join(lines)
 
 
 def _call_daemon(method: str, *args: Any) -> str | None:
@@ -1683,15 +2087,21 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("daemon", help="Run persistent DBus/KWin auto-switching daemon")
 
-    p_status = sub.add_parser("status", help="Show current DP-1 mode, policy, active window, and players")
+    p_status = sub.add_parser("status", help="Show current display mode, policy, active window, and players (read-only)")
     p_status.add_argument("--json", action="store_true", help="Print JSON output")
 
+    p_diag = sub.add_parser(
+        "diagnose",
+        help="Run strictly read-only sanitized OS/session/GPU/display/HDMI-audio diagnostic report",
+    )
+    p_diag.add_argument("--json", action="store_true", help="Print JSON output")
+
     for name, help_txt in (
-        ("4k", "Switch DP-1 to Movie Mode 3840x2160@30.00 (Steam still overrides to 1080p@60)"),
-        ("movie", "Alias for 4k (Movie Mode 3840x2160@30.00)"),
-        ("1080p", "Switch DP-1 to 1920x1080@60.00"),
-        ("auto", "Return to automatic mode (1080p@60 default unless auto_4k_video_switch=true; Steam auto-1080p)"),
-        ("toggle", "Toggle between Movie Mode (4k) and 1080p Mode"),
+        ("4k", "Switch display to Movie Mode 4K (Steam overrides if steam_priority=true)"),
+        ("movie", "Alias for 4k (Movie Mode)"),
+        ("1080p", "Switch display to UI Mode (1080p@60 or best available)"),
+        ("auto", "Return to automatic mode"),
+        ("toggle", "Toggle between Movie Mode (4k) and UI Mode (1080p)"),
     ):
         p_mode = sub.add_parser(name, help=help_txt)
         p_mode.add_argument("--json", action="store_true", help="Print JSON output")
@@ -1713,8 +2123,17 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config()
 
+    if cmd == "diagnose":
+        report = build_diagnose_payload(cfg)
+        if getattr(args, "json", False):
+            print(json.dumps(report, indent=2))
+        else:
+            print(format_diagnose_text(report))
+        return 0
+
     if cmd == "status":
-        raw = _call_daemon("EvaluateNow")
+        # CRITICAL: strictly read-only GetStatus (never EvaluateNow which mutates display state)
+        raw = _call_daemon("GetStatus")
         if raw:
             data = json.loads(raw)
         else:
@@ -1759,7 +2178,17 @@ def main(argv: list[str] | None = None) -> int:
         dec = decide_target_mode(kwin_state, playbacks, cmd, cfg)
         applied = apply_display_mode(dec["target"], cfg, dry_run=False, kscreen_info=ks)
         if getattr(args, "json", False):
-            print(json.dumps({"manual_mode": cmd, "decision": dec, "applied": applied}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "manual_mode": cmd,
+                        "decision": dec,
+                        "display": _summarize_kscreen(ks),
+                        "applied": applied,
+                    },
+                    indent=2,
+                )
+            )
         else:
             print(
                 f"Override={cmd} -> target={dec['target']} ({dec['reason']}), "
