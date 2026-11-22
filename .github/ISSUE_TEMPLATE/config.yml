@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Hardware & Distro Compatibility Matrix
+    url: https://github.com/nissifield/NextGen_plasmabigscreen/blob/main/docs/COMPATIBILITY.md
+    about: Check which Linux distros, GPUs, displays, remotes, and streaming apps are verified vs. untested
+  - name: Contribution Board & Issue Cards
+    url: https://github.com/nissifield/NextGen_plasmabigscreen/blob/main/docs/CONTRIBUTION_BOARD.md
+    about: Browse ready-for-contributors tasks across mutable distros, AMD/NVIDIA/Intel GPUs, displays, remotes, installer, and QA
+  - name: Contributing Guide (Human-First, AI Optional)
+    url: https://github.com/nissifield/NextGen_plasmabigscreen/blob/main/CONTRIBUTING.md
+    about: Learn how to test safely in user-space ($HOME) and submit Pull Requests with honest evidence

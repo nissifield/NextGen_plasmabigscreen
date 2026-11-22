@@ -1,0 +1,55 @@
+name: Feature Request / Proposal
+description: Suggest an improvement, new hardware/remote profile, or living-room TV capability
+title: "[Feature]: <short summary>"
+labels: ["help wanted"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [`docs/CONTRIBUTION_BOARD.md`](https://github.com/nissifield/NextGen_plasmabigscreen/blob/main/docs/CONTRIBUTION_BOARD.md) and [`docs/ARCHITECTURE.md`](https://github.com/nissifield/NextGen_plasmabigscreen/blob/main/docs/ARCHITECTURE.md) before opening a new proposal.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Subsystem Boundary
+      options:
+        - TV Experience (QML homescreen, launchers, OSD/toast, accessibility/i18n)
+        - TV Services (tv-display-mode, KWin script, session switcher, auto-pause, remote daemon)
+        - Platform Adapters (GPU/DRM/CEC probing, remote profiles, manifest/installer/rollback)
+        - Documentation / QA / CI
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or User Need
+      description: Describe the living-room problem or limitation you want to solve.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution & Non-Goals
+      description: Describe the user-space ($HOME) approach you envision and what should stay out of scope.
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety, Rollback & Hardware Assumptions
+      description: Does this touch display modes, user configs, Flatpak overrides, or require specific hardware? How should rollback work cleanly?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Contribution Interest
+      options:
+        - label: I am interested in testing this on real hardware.
+          required: false
+        - label: I am interested in helping implement or document this (PR welcome).
+          required: false

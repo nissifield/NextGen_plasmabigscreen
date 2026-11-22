@@ -1,0 +1,162 @@
+name: CI (Static, Unit & Fixture Checks)
+
+# NOTE: This workflow validates syntax, unit tests, fixture tests, C syntax, and
+# internal Markdown links on GitHub-hosted runners. It does NOT test on real TV
+# hardware, live KDE Plasma 6 Wayland sessions, GPU VA-API decode, or physical
+# remotes/HDMI-CEC adapters. Hardware compatibility still requires manual testing
+# per docs/COMPATIBILITY.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Syntax, Unit Tests, C Check & Markdown Links
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Shell syntax checks (bash -n)
+        run: |
+          set -euo pipefail
+          mapfile -t sh_files < <(
+            find . -maxdepth 4 -not -path './.git/*' \
+              \( -name '*.sh' -o -path './bin/steamos-add-to-steam' -o -path './bin/streaming_scripts/*' \) \
+              -type f | sort
+          )
+          for f in "${sh_files[@]}"; do
+            echo "Checking bash -n: $f"
+            bash -n "$f"
+          done
+
+      - name: ShellCheck (if available)
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            mapfile -t sh_files < <(
+              find . -maxdepth 4 -not -path './.git/*' -name '*.sh' -type f | sort
+            )
+            shellcheck -S warning "${sh_files[@]}"
+          else
+            echo "shellcheck not installed on runner; skipping."
+          fi
+
+      - name: Python syntax check (py_compile)
+        run: |
+          set -euo pipefail
+          mapfile -t py_files < <(
+            find . -maxdepth 4 -not -path './.git/*' \
+              \( -name '*.py' -o -path './bin/tv-display-mode' -o -path './bin/tv-movie-mode-toggle' \) \
+              -type f | sort
+          )
+          python3 -m py_compile "${py_files[@]}"
+
+      - name: Run Python unit and fixture test suite
+        run: |
+          python3 -m unittest discover -s tests -v
+
+      - name: C syntax check (stremio_mpv_shim.c)
+        run: |
+          gcc -fsyntax-only -Wall -Wextra -fPIC -O2 stremio/stremio_mpv_shim.c
+
+      - name: Check internal Markdown links and heading anchors
+        run: |
+          python3 - <<'EOF'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+          from urllib.parse import unquote
+
+          ROOT = Path(".").resolve()
+          md_files = sorted(p for p in ROOT.rglob("*.md") if ".git" not in p.parts)
+
+          def slugify_gfm(heading: str) -> str:
+              text = heading.strip().lower()
+              # Strip inline markdown links/formatting
+              text = re.sub(r"`([^`]*)`", r"\1", text)
+              text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+              text = re.sub(r"[*_~]", "", text)
+              # GFM keeps alphanumeric, spaces, hyphens; removes punctuation
+              text = re.sub(r"[^\w\s-]", "", text)
+              text = text.replace(" ", "-")
+              return text
+
+          anchors_cache: dict[Path, set[str]] = {}
+          def get_anchors(path: Path) -> set[str]:
+              if path not in anchors_cache:
+                  anchors: set[str] = set()
+                  counts: dict[str, int] = {}
+                  in_fence = False
+                  for line in path.read_text(encoding="utf-8").splitlines():
+                      if line.strip().startswith("```"):
+                          in_fence = not in_fence
+                          continue
+                      if in_fence:
+                          continue
+                      m = re.match(r"^#{1,6}\s+(.+?)\s*#*$", line)
+                      if m:
+                          base = slugify_gfm(m.group(1))
+                          if base in counts:
+                              counts[base] += 1
+                              anchors.add(f"{base}-{counts[base]}")
+                          else:
+                              counts[base] = 0
+                              anchors.add(base)
+                  anchors_cache[path] = anchors
+              return anchors_cache[path]
+
+          link_re = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+          errors: list[str] = []
+
+          for md in md_files:
+              in_fence = False
+              for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+                  if line.strip().startswith("```"):
+                      in_fence = not in_fence
+                      continue
+                  if in_fence:
+                      continue
+                  # Strip inline code spans before scanning for links
+                  cleaned = re.sub(r"`[^`]*`", "", line)
+                  for match in link_re.finditer(cleaned):
+                      raw_target = match.group(1).strip().split()[0]
+                      if raw_target.startswith(("http://", "https://", "mailto:", "tel:")):
+                          continue
+                      if raw_target.startswith("#"):
+                          target_file = md
+                          anchor = unquote(raw_target[1:])
+                      else:
+                          parts = raw_target.split("#", 1)
+                          rel_path = unquote(parts[0])
+                          anchor = unquote(parts[1]) if len(parts) > 1 else ""
+                          target_file = (md.parent / rel_path).resolve()
+
+                      if not target_file.exists():
+                          errors.append(f"{md.relative_to(ROOT)}:{lineno}: broken link target '{raw_target}'")
+                          continue
+                      if anchor and target_file.is_file() and target_file.suffix.lower() == ".md":
+                          valid_anchors = get_anchors(target_file)
+                          if anchor not in valid_anchors:
+                              errors.append(
+                                  f"{md.relative_to(ROOT)}:{lineno}: broken anchor '#{anchor}' in {target_file.relative_to(ROOT)}"
+                              )
+
+          if errors:
+              print("Markdown link check FAILED:")
+              for e in errors:
+                  print("  -", e)
+              sys.exit(1)
+          print(f"Markdown link check passed across {len(md_files)} files.")
+          EOF

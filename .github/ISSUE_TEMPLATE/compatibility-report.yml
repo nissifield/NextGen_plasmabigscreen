@@ -1,0 +1,139 @@
+name: Compatibility Report
+description: Report real-hardware test results for a Linux distro, GPU, display, remote, or streaming app
+title: "[Compat]: <distro / GPU / device>"
+labels: ["area:compatibility", "needs-hardware-test"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for sharing real-hardware evidence! Please check [`docs/COMPATIBILITY.md`](https://github.com/nissifield/NextGen_plasmabigscreen/blob/main/docs/COMPATIBILITY.md) and its Manual Hardware Acceptance Checklist first.
+
+        **Privacy reminder:** Redact personal usernames, hostnames, `/home/<name>` paths, monitor/USB serial numbers, Bluetooth/Wi-Fi MAC addresses, auth tokens, Steam/Jellyfin/Stremio credentials, private server URLs, and personal media filenames before submitting.
+
+  - type: input
+    id: distro
+    attributes:
+      label: Linux Distribution & Version
+      description: Output of `cat /etc/os-release` (e.g. Fedora 43 KDE Spin, Arch Linux, Ubuntu 25.10, Bazzite 45)
+      placeholder: "e.g., Fedora 43 KDE Spin"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os_model
+    attributes:
+      label: OS Model (Atomic vs Mutable)
+      options:
+        - Atomic / Immutable (rpm-ostree / transactional-update)
+        - Mutable (dnf / apt / pacman / zypper)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: desktop_session
+    attributes:
+      label: KDE Plasma, Bigscreen & Wayland Session Versions
+      description: Output of `plasmashell --version`, `$XDG_SESSION_TYPE`, and installed `plasma-bigscreen` package version
+      placeholder: "e.g., plasmashell 6.x.x, Wayland, plasma-bigscreen 6.x.x"
+    validations:
+      required: true
+
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel Version
+      description: Output of `uname -r`
+      placeholder: "e.g., 6.14.x / 7.x.x"
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU & Video Decode Driver
+      description: GPU model, kernel driver (`i915`, `xe`, `amdgpu`, `nvidia`), Mesa/NVIDIA version, and `vainfo` / NVDEC status
+      placeholder: "e.g., AMD Radeon RX 7600 (amdgpu, Mesa 25.x, radeonsi VA-API)"
+    validations:
+      required: true
+
+  - type: input
+    id: display
+    attributes:
+      label: TV / Display, Connector & Modes
+      description: Connector name (`HDMI-A-1`, `DP-1`, etc.), tested resolutions/refresh rates, SDR/HDR/VRR, single vs multi-monitor
+      placeholder: "e.g., HDMI-A-1, 3840x2160@60 + 1920x1080@60, SDR, single display"
+    validations:
+      required: true
+
+  - type: input
+    id: remote_cec
+    attributes:
+      label: Remote, Game Controller & HDMI-CEC
+      description: USB/BT/RF remote model & Vendor:Product ID (redact MAC/serials!), controller model, `/dev/cec*` type (native, USB-CEC, tunneled `cec-DP-*`, or none)
+      placeholder: "e.g., Xbox Wireless Controller + Pulse-Eight USB-CEC (/dev/cec0)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: apps
+    attributes:
+      label: Tested Apps & Versions
+      description: List tested apps (VacuumTube, Stremio, Jellyfin Desktop, Haruna, Steam, Firefox, etc.), packaging (Flatpak vs native), navigation experience, codecs/resolutions tested, hardware decode status, and any playback/DRM restrictions.
+      placeholder: |
+        - Jellyfin Desktop 2.0.0 (Flatpak): Remote nav OK, 4K HEVC 10-bit HW decode verified
+        - VacuumTube 2.1.1 (Flatpak): ...
+        - Steam (native /usr/bin/steam): ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: commands_tested
+    attributes:
+      label: Commands & Scenarios Tested
+      description: Which commands did you run (`./install.sh --dry-run`, `./install.sh`, `tv-session-switch.sh`, `tv-display-mode diagnose`, `tv-remote-keymap.py --diagnose`, `./rollback-tv-setup.sh`, etc.)?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized Diagnostic Output / Logs
+      description: Paste redacted output of `tv-display-mode diagnose`, `tv-remote-keymap.py --diagnose`, and any relevant errors (NO serials, usernames, tokens, or MACs).
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback & Recovery Outcome
+      description: Did `./rollback-tv-setup.sh` cleanly restore your desktop, services, and pre-existing user configs/Flatpak overrides?
+    validations:
+      required: true
+
+  - type: textarea
+    id: accessibility_notes
+    attributes:
+      label: Accessibility & 10-Foot Readability Notes (Optional)
+      description: Note any focus-ring visibility, text scaling, keyboard/D-Pad trap, or screen-reader observations at TV viewing distance.
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or Additional Notes (Optional)
+      description: Attach redacted screenshots or extra observations if helpful.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: privacy_confirm
+    attributes:
+      label: Verification & Privacy Confirmation
+      options:
+        - label: I have redacted usernames, hostnames, serial numbers, MAC addresses, auth tokens, private URLs, and personal media titles from all logs and screenshots.
+          required: true
+        - label: I have accurately reported what was tested on real hardware vs. what was not tested.
+          required: true
