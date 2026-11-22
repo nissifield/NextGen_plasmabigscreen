@@ -230,9 +230,10 @@ install_file "$REPO_DIR/configs/applications-blacklistrc" "$HOME/.config/applica
 install_file "$REPO_DIR/configs/applications-blacklistrc" "$HOME/.config/plasma-bigscreen/applications-blacklistrc" 0644 --preserve-user-edits
 install_template "$REPO_DIR/configs/bigscreen-favs.template" "$HOME/.config/bigscreen-favs" 0644 --preserve-user-edits
 
-for d in steam-bigpicture.desktop com.stremio.Stremio.desktop org.jellyfin.JellyfinDesktop.desktop rocks.shy.VacuumTube.desktop; do
+for d in com.stremio.Stremio.desktop org.jellyfin.JellyfinDesktop.desktop rocks.shy.VacuumTube.desktop; do
     install_file "$REPO_DIR/desktop/$d" "$HOME/.local/share/applications/$d" 0644
 done
+install_template "$REPO_DIR/desktop/steam-bigpicture.desktop" "$HOME/.local/share/applications/steam-bigpicture.desktop" 0644
 install_template "$REPO_DIR/desktop/tv-movie-mode.desktop.template" "$HOME/.local/share/applications/tv-movie-mode.desktop" 0644
 install_template "$REPO_DIR/desktop/plasma-bigscreen-swap.desktop.template" "$HOME/.local/share/applications/plasma-bigscreen-swap.desktop" 0644
 install_template "$REPO_DIR/desktop/return-to-desktop.desktop.template" "$HOME/.local/share/applications/return-to-desktop.desktop" 0644

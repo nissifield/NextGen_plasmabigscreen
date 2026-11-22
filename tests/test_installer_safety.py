@@ -562,6 +562,136 @@ class TestInstallerSafety(unittest.TestCase):
         self.assertFalse((real_home / ".local/bin/tv-display-mode").exists())
         self.assertEqual(self._read_manifest()["status"], "rolled_back")
 
+    # (k) Distro- and architecture-agnostic launchers and template placeholders
+    def test_k_distro_and_arch_agnostic_launchers_and_templates(self) -> None:
+        # Create a user-local Flatpak Haruna desktop entry to verify @HARUNA_DESKTOP_PATH@ prefers it
+        user_haruna = self.home / ".local/share/flatpak/exports/share/applications/org.kde.haruna.desktop"
+        user_haruna.parent.mkdir(parents=True, exist_ok=True)
+        user_haruna.write_text("[Desktop Entry]\nName=Haruna\n", encoding="utf-8")
+
+        res = self._run_install("--gpu", "amd")
+        self.assertEqual(res.returncode, 0, msg=res.stderr + "\n" + res.stdout)
+
+        # Installed Flatpak desktop files must not hardcode --arch=x86_64
+        for desktop_name in (
+            "com.stremio.Stremio.desktop",
+            "org.jellyfin.JellyfinDesktop.desktop",
+            "rocks.shy.VacuumTube.desktop",
+        ):
+            desktop_text = (self.home / ".local/share/applications" / desktop_name).read_text(encoding="utf-8")
+            self.assertNotIn("--arch=x86_64", desktop_text, msg=f"{desktop_name} still hardcodes --arch=x86_64")
+
+        # steam-bigpicture.desktop must render @STEAM_EXEC@ cleanly
+        steam_desktop = (self.home / ".local/share/applications/steam-bigpicture.desktop").read_text(encoding="utf-8")
+        self.assertNotIn("@STEAM_EXEC@", steam_desktop)
+        expected_steam = manifest_mod.resolve_steam_exec(self.home)
+        self.assertIn(f"Exec={expected_steam} steam://open/bigpicture", steam_desktop)
+
+        # bigscreen-favs must render @HARUNA_DESKTOP_PATH@ and @HOME@ cleanly
+        favs_text = (self.home / ".config/bigscreen-favs").read_text(encoding="utf-8")
+        self.assertNotIn("@HARUNA_DESKTOP_PATH@", favs_text)
+        self.assertNotIn("@HOME@", favs_text)
+        self.assertIn(f"desktopPath={user_haruna}", favs_text)
+        self.assertIn(f"entryPath={user_haruna}", favs_text)
+
+        # Verify all resolution branches of resolve_steam_exec and resolve_haruna_desktop_path
+        fake_root = Path(self._tmp.name) / "fake-host"
+        fake_bazzite = fake_root / "usr/bin/bazzite-steam"
+        fake_usr_steam = fake_root / "usr/bin/steam"
+        fake_sys_fp_steam = fake_root / "var/lib/flatpak/app/com.valvesoftware.Steam"
+        fake_home = fake_root / "home/tester"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        missing = fake_root / "does-not-exist"
+
+        # Fallback -> "steam"
+        self.assertEqual(
+            manifest_mod.resolve_steam_exec(
+                fake_home,
+                bazzite_steam=missing,
+                usr_steam=missing,
+                system_flatpak_app=missing,
+                which_fn=lambda _cmd: None,
+            ),
+            "steam",
+        )
+        # Flatpak Steam (user or system)
+        fake_sys_fp_steam.mkdir(parents=True, exist_ok=True)
+        self.assertEqual(
+            manifest_mod.resolve_steam_exec(
+                fake_home,
+                bazzite_steam=missing,
+                usr_steam=missing,
+                system_flatpak_app=fake_sys_fp_steam,
+                which_fn=lambda _cmd: None,
+            ),
+            "/usr/bin/flatpak run com.valvesoftware.Steam",
+        )
+        # Native /usr/bin/steam
+        fake_usr_steam.parent.mkdir(parents=True, exist_ok=True)
+        fake_usr_steam.write_text("#!/bin/sh\n", encoding="utf-8")
+        fake_usr_steam.chmod(0o755)
+        self.assertEqual(
+            manifest_mod.resolve_steam_exec(
+                fake_home,
+                bazzite_steam=missing,
+                usr_steam=fake_usr_steam,
+                system_flatpak_app=fake_sys_fp_steam,
+                which_fn=lambda _cmd: None,
+            ),
+            str(fake_usr_steam),
+        )
+        # Bazzite /usr/bin/bazzite-steam takes highest precedence
+        fake_bazzite.write_text("#!/bin/sh\n", encoding="utf-8")
+        fake_bazzite.chmod(0o755)
+        self.assertEqual(
+            manifest_mod.resolve_steam_exec(
+                fake_home,
+                bazzite_steam=fake_bazzite,
+                usr_steam=fake_usr_steam,
+                system_flatpak_app=fake_sys_fp_steam,
+                which_fn=lambda _cmd: "/alt/steam",
+            ),
+            str(fake_bazzite),
+        )
+
+        # Haruna desktop path resolution order
+        fake_sys_haruna = fake_root / "var/lib/flatpak/exports/share/applications/org.kde.haruna.desktop"
+        fake_native_haruna = fake_root / "usr/share/applications/org.kde.haruna.desktop"
+        # Fallback
+        self.assertEqual(
+            manifest_mod.resolve_haruna_desktop_path(
+                fake_home,
+                str(fake_home),
+                system_flatpak_desktop=missing,
+                native_desktop=missing,
+            ),
+            "/var/lib/flatpak/exports/share/applications/org.kde.haruna.desktop",
+        )
+        # Native distro package
+        fake_native_haruna.parent.mkdir(parents=True, exist_ok=True)
+        fake_native_haruna.write_text("[Desktop Entry]\n", encoding="utf-8")
+        self.assertEqual(
+            manifest_mod.resolve_haruna_desktop_path(
+                fake_home,
+                str(fake_home),
+                system_flatpak_desktop=missing,
+                native_desktop=fake_native_haruna,
+            ),
+            str(fake_native_haruna),
+        )
+        # System Flatpak
+        fake_sys_haruna.parent.mkdir(parents=True, exist_ok=True)
+        fake_sys_haruna.write_text("[Desktop Entry]\n", encoding="utf-8")
+        self.assertEqual(
+            manifest_mod.resolve_haruna_desktop_path(
+                fake_home,
+                str(fake_home),
+                system_flatpak_desktop=fake_sys_haruna,
+                native_desktop=fake_native_haruna,
+            ),
+            str(fake_sys_haruna),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

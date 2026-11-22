@@ -167,6 +167,22 @@ def _read_sysfs_text(path: str) -> str:
         return ""
 
 
+def _has_key_capabilities(sys_event_path: str) -> bool:
+    """
+    Return False when sysfs explicitly reports `capabilities/key` as zero (no keycodes supported,
+    e.g. raw-HID/mouse/accelerometer sibling sub-devices on composite USB remotes).
+    Returns True if `capabilities/key` has non-zero bits or is absent.
+    """
+    key_cap_path = os.path.join(sys_event_path, "device", "capabilities", "key")
+    if not os.path.exists(key_cap_path):
+        return True
+    raw = _read_sysfs_text(key_cap_path)
+    if not raw:
+        return False
+    tokens = raw.split()
+    return any(tok.lstrip("0") != "" for tok in tokens)
+
+
 def _infer_device_capabilities(name: str, sys_event_path: str) -> list[str]:
     """Infer coarse device capability tags without reading serial/uniq identifiers."""
     caps: list[str] = []
@@ -179,8 +195,9 @@ def _infer_device_capabilities(name: str, sys_event_path: str) -> list[str]:
         caps.append("keyboard")
     if not caps:
         # Check evdev key capability bitmask presence in sysfs if available
-        key_cap = _read_sysfs_text(os.path.join(sys_event_path, "device", "capabilities", "key"))
-        if key_cap and key_cap != "0":
+        if os.path.exists(os.path.join(sys_event_path, "device", "capabilities", "key")) and _has_key_capabilities(
+            sys_event_path
+        ):
             caps.append("keyboard")
     return caps
 
@@ -234,6 +251,7 @@ def discover_input_devices(
                 "vendor": vendor,
                 "product": product,
                 "vendor_product": f"{vendor}:{product}" if (vendor or product) else "",
+                "has_key_capabilities": _has_key_capabilities(sys_path),
                 "capabilities": _infer_device_capabilities(raw_name, sys_path),
                 "permissions": perms,
             }
@@ -320,7 +338,7 @@ def find_remote_event_devices(
     sys_input_root: str = "/sys/class/input",
     dev_input_root: str = "/dev/input",
 ) -> list[str]:
-    """Return sorted list of /dev/input/event* paths belonging to vendor_id:product_id."""
+    """Return sorted list of key-capable /dev/input/event* paths belonging to vendor_id:product_id."""
     want_v = vendor_id.lower()
     want_p = product_id.lower()
     matched = []
@@ -329,6 +347,8 @@ def find_remote_event_devices(
         vendor = _read_sysfs_text(os.path.join(sys_path, "device", "id", "vendor")).lower()
         product = _read_sysfs_text(os.path.join(sys_path, "device", "id", "product")).lower()
         if vendor == want_v and product == want_p:
+            if not _has_key_capabilities(sys_path):
+                continue
             dev_node = os.path.join(dev_input_root, ev_name)
             if os.path.exists(dev_node):
                 matched.append(dev_node)
@@ -358,9 +378,40 @@ def _format_open_error(dev: str, exc: OSError) -> str:
     return f"{dev}: cannot open ({exc})"
 
 
+def _is_permission_error(exc: OSError) -> bool:
+    return exc.errno in (errno.EACCES, errno.EPERM)
+
+
+def _report_profile_open_errors(
+    open_errors: list[tuple[str, OSError]],
+    opened_count: int,
+    verbose: bool,
+    show_sibling_errors: bool,
+) -> None:
+    """
+    Emit open errors for a matched profile:
+    - If zero key-capable nodes opened, ALWAYS report EACCES + uaccess hint (when verbose).
+    - If >=1 sibling node opened cleanly, silence harmless sibling EACCES unless
+      `show_sibling_errors` (--verbose) is explicitly enabled.
+    """
+    if not open_errors or not verbose:
+        return
+    if opened_count == 0:
+        for dev, exc in open_errors:
+            print(_format_open_error(dev, exc))
+        return
+    for dev, exc in open_errors:
+        if _is_permission_error(exc):
+            if show_sibling_errors:
+                print(f"{dev}: skipped inaccessible sibling sub-device ({exc})")
+        else:
+            print(_format_open_error(dev, exc))
+
+
 def apply_mappings(
     reset: bool = False,
     verbose: bool = True,
+    show_sibling_errors: bool = False,
     profile_name: str | None = None,
     profiles_config_path: str | None = None,
     sys_input_root: str = "/sys/class/input",
@@ -381,10 +432,11 @@ def apply_mappings(
     matched = match_profiles_for_devices(devices, profiles, forced_profile=profile_name)
 
     remap_targets: list[tuple[dict[str, Any], list[dict[str, Any]]]] = [
-        (m["profile"], m["devices"])
+        (m["profile"], [d for d in m["devices"] if d.get("has_key_capabilities", True)])
         for m in matched
         if m["profile"].get("scancode_map")
     ]
+    remap_targets = [(p, ds) for p, ds in remap_targets if ds]
     if not remap_targets:
         if verbose:
             target_label = profile_name or f"{VENDOR_ID}:{PRODUCT_ID}"
@@ -394,14 +446,16 @@ def apply_mappings(
     updated_count = 0
     for prof, prof_devices in remap_targets:
         scancode_map = prof.get("scancode_map") or {}
+        opened_count = 0
+        open_errors: list[tuple[str, OSError]] = []
         for dev_info in prof_devices:
             dev = dev_info["dev_node"]
             try:
                 fd = open_fn(dev, os.O_RDWR)
             except OSError as exc:
-                if verbose:
-                    print(_format_open_error(dev, exc))
+                open_errors.append((dev, exc))
                 continue
+            opened_count += 1
             try:
                 for scancode, (target_kc, default_kc, desc) in scancode_map.items():
                     current_kc = get_keycode_fn(fd, scancode)
@@ -417,12 +471,19 @@ def apply_mappings(
                         print(f"{dev}: 0x{scancode:06x} == {current_kc} ({desc})")
             finally:
                 close_fn(fd)
+        _report_profile_open_errors(
+            open_errors,
+            opened_count=opened_count,
+            verbose=verbose,
+            show_sibling_errors=show_sibling_errors,
+        )
     return updated_count
 
 
 def print_status(
     profile_name: str | None = None,
     profiles_config_path: str | None = None,
+    show_sibling_errors: bool = False,
     sys_input_root: str = "/sys/class/input",
     dev_input_root: str = "/dev/input",
     cec_dev: str = CEC_DEV,
@@ -443,25 +504,31 @@ def print_status(
     matched = match_profiles_for_devices(devices, profiles, cec_info=cec_info, forced_profile=profile_name)
 
     remap_targets = [
-        (m["profile"], m["devices"])
+        (m["profile"], [d for d in m["devices"] if d.get("has_key_capabilities", True)])
         for m in matched
-        if m["profile"].get("scancode_map") and m["devices"]
+        if m["profile"].get("scancode_map")
     ]
+    remap_targets = [(p, ds) for p, ds in remap_targets if ds]
     if not remap_targets:
         target_label = profile_name or f"{VENDOR_ID}:{PRODUCT_ID}"
         print(f"No event devices found for {target_label}")
         return 1
 
+    total_opened = 0
     for prof, prof_devices in remap_targets:
         scancode_map = prof.get("scancode_map") or {}
         print(f"Profile: {prof.get('name')} ({prof.get('display_name')})")
+        opened_count = 0
+        open_errors: list[tuple[str, OSError]] = []
         for dev_info in prof_devices:
             dev = dev_info["dev_node"]
             try:
                 fd = open_fn(dev, os.O_RDONLY)
             except OSError as exc:
-                print(_format_open_error(dev, exc))
+                open_errors.append((dev, exc))
                 continue
+            opened_count += 1
+            total_opened += 1
             try:
                 for scancode, (target_kc, default_kc, desc) in scancode_map.items():
                     current_kc = get_keycode_fn(fd, scancode)
@@ -473,7 +540,13 @@ def print_status(
                         )
             finally:
                 close_fn(fd)
-    return 0
+        _report_profile_open_errors(
+            open_errors,
+            opened_count=opened_count,
+            verbose=True,
+            show_sibling_errors=show_sibling_errors,
+        )
+    return 0 if total_opened > 0 else 1
 
 
 def build_diagnose_report(
@@ -612,10 +685,12 @@ def format_diagnose_text(report: dict[str, Any]) -> str:
 def watch_hotplug(
     profile_name: str | None = None,
     profiles_config_path: str | None = None,
+    show_sibling_errors: bool = False,
 ) -> None:
     apply_mappings(
         reset=False,
         verbose=True,
+        show_sibling_errors=show_sibling_errors,
         profile_name=profile_name,
         profiles_config_path=profiles_config_path,
     )
@@ -634,6 +709,7 @@ def watch_hotplug(
                 apply_mappings(
                     reset=False,
                     verbose=True,
+                    show_sibling_errors=show_sibling_errors,
                     profile_name=profile_name,
                     profiles_config_path=profiles_config_path,
                 )
@@ -660,6 +736,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Strictly read-only sanitized input, permission, profile, and CEC diagnostic report",
     )
     parser.add_argument("--json", action="store_true", help="Output JSON (for --diagnose)")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Include skipped inaccessible sibling sub-device notices during --apply/--status/--watch",
+    )
     parser.add_argument("--profile", default=None, help="Explicit remote profile name to target")
     parser.add_argument(
         "--profiles-config",
@@ -683,6 +765,7 @@ def main(argv: list[str] | None = None) -> int:
         apply_mappings(
             reset=True,
             verbose=True,
+            show_sibling_errors=args.verbose,
             profile_name=args.profile,
             profiles_config_path=args.profiles_config,
         )
@@ -691,17 +774,20 @@ def main(argv: list[str] | None = None) -> int:
         return print_status(
             profile_name=args.profile,
             profiles_config_path=args.profiles_config,
+            show_sibling_errors=args.verbose,
         )
     if args.watch:
         watch_hotplug(
             profile_name=args.profile,
             profiles_config_path=args.profiles_config,
+            show_sibling_errors=args.verbose,
         )
         return 0
 
     apply_mappings(
         reset=False,
         verbose=True,
+        show_sibling_errors=args.verbose,
         profile_name=args.profile,
         profiles_config_path=args.profiles_config,
     )

@@ -2,7 +2,7 @@
 Version=1.0
 Name=YouTube TV
 Comment=Ad-Free YouTube Leanback TV Experience
-Exec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=startvacuumtube --file-forwarding rocks.shy.VacuumTube --fullscreen @@u %U @@
+Exec=/usr/bin/flatpak run --branch=stable --command=startvacuumtube --file-forwarding rocks.shy.VacuumTube --fullscreen @@u %U @@
 Terminal=false
 Type=Application
 Icon=rocks.shy.VacuumTube

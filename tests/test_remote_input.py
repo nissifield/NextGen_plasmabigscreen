@@ -102,6 +102,11 @@ def _create_fake_input_tree(base_dir: str, devices: list[dict]) -> tuple[str, st
             # Plant a sensitive uniq/MAC/serial file to prove diagnose NEVER reads or leaks it
             with open(os.path.join(sys_root, ev, "device", "uniq"), "w", encoding="utf-8") as fh:
                 fh.write(dev["uniq"] + "\n")
+        if "key_cap" in dev:
+            cap_dir = os.path.join(sys_root, ev, "device", "capabilities")
+            os.makedirs(cap_dir, exist_ok=True)
+            with open(os.path.join(cap_dir, "key"), "w", encoding="utf-8") as fh:
+                fh.write(dev["key_cap"] + "\n")
         dev_node = os.path.join(dev_root, ev)
         with open(dev_node, "w", encoding="utf-8") as fh:
             fh.write("")
@@ -372,6 +377,141 @@ class TestReadOnlyAndPermissions(unittest.TestCase):
             output = buf.getvalue()
             self.assertIn("EACCES", output)
             self.assertIn("uaccess", output.lower())
+
+            # 3. --status also reports EACCES + uaccess hint when ALL nodes fail
+            buf_status = io.StringIO()
+            with mock.patch("sys.stdout", buf_status):
+                rc = remote_mod.print_status(
+                    sys_input_root=sys_root,
+                    dev_input_root=dev_root,
+                    cec_dev="/nonexistent/cec0",
+                    open_fn=deny_open,
+                )
+            self.assertEqual(rc, 1)
+            status_out = buf_status.getvalue()
+            self.assertIn("EACCES", status_out)
+            self.assertIn("uaccess", status_out.lower())
+
+    def test_composite_usb_skips_non_key_and_silences_sibling_eacces_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sys_root, dev_root = _create_fake_input_tree(
+                tmp,
+                [
+                    {
+                        "event": "event7",
+                        "vendor": "620a",
+                        "product": "0407",
+                        "name": "XING WEI Keyboard",
+                        "key_cap": "1000000000007 ff9f207ac14057ff",
+                    },
+                    {
+                        "event": "event8",
+                        "vendor": "620a",
+                        "product": "0407",
+                        "name": "XING WEI Mouse",
+                        "key_cap": "70000 0 0 0 0",  # mouse buttons (has key bits) but lacks uaccess ACL
+                    },
+                    {
+                        "event": "event9",
+                        "vendor": "620a",
+                        "product": "0407",
+                        "name": "XING WEI Consumer Control",
+                        "key_cap": "300ff 0 0 483ffff17aff32d",
+                    },
+                    {
+                        "event": "event11",
+                        "vendor": "620a",
+                        "product": "0407",
+                        "name": "XING WEI Raw HID",
+                        "key_cap": "0",  # zero key capabilities -> filtered out completely
+                    },
+                ],
+            )
+
+            # 1. find_remote_event_devices filters out capabilities/key == "0" (event11)
+            found = remote_mod.find_remote_event_devices(
+                sys_input_root=sys_root,
+                dev_input_root=dev_root,
+            )
+            self.assertIn(os.path.join(dev_root, "event7"), found)
+            self.assertIn(os.path.join(dev_root, "event9"), found)
+            self.assertNotIn(os.path.join(dev_root, "event11"), found)
+
+            opened_paths: list[str] = []
+
+            def mixed_open(path: str, _flags: int) -> int:
+                opened_paths.append(os.path.basename(path))
+                if path.endswith("event8"):
+                    raise PermissionError(errno.EACCES, "Permission denied")
+                return 100
+
+            # 2. apply_mappings: event7 & event9 succeed, event11 is never opened,
+            #    and event8 sibling EACCES is silenced by default (no scary EACCES noise!)
+            buf_apply = io.StringIO()
+            with mock.patch("sys.stdout", buf_apply):
+                updated = remote_mod.apply_mappings(
+                    reset=False,
+                    verbose=True,
+                    show_sibling_errors=False,
+                    sys_input_root=sys_root,
+                    dev_input_root=dev_root,
+                    cec_dev="/nonexistent/cec0",
+                    open_fn=mixed_open,
+                    close_fn=lambda _fd: None,
+                    get_keycode_fn=lambda _fd, sc: 353 if sc == 0x0C0041 else None,
+                    set_keycode_fn=lambda _fd, _sc, _kc: None,
+                )
+            self.assertEqual(updated, 2)
+            self.assertNotIn("event11", opened_paths)
+            apply_out = buf_apply.getvalue()
+            self.assertNotIn("EACCES", apply_out)
+            self.assertNotIn("permission denied", apply_out.lower())
+
+            # 3. With show_sibling_errors=True (--verbose), sibling skip notice IS shown
+            buf_verbose = io.StringIO()
+            with mock.patch("sys.stdout", buf_verbose):
+                remote_mod.apply_mappings(
+                    reset=False,
+                    verbose=True,
+                    show_sibling_errors=True,
+                    sys_input_root=sys_root,
+                    dev_input_root=dev_root,
+                    cec_dev="/nonexistent/cec0",
+                    open_fn=mixed_open,
+                    close_fn=lambda _fd: None,
+                    get_keycode_fn=lambda _fd, sc: 28 if sc == 0x0C0041 else None,
+                    set_keycode_fn=lambda _fd, _sc, _kc: None,
+                )
+            self.assertIn("event8", buf_verbose.getvalue())
+
+            # 4. print_status: sibling EACCES silenced by default when event7/event9 open cleanly
+            buf_st = io.StringIO()
+            with mock.patch("sys.stdout", buf_st):
+                rc = remote_mod.print_status(
+                    sys_input_root=sys_root,
+                    dev_input_root=dev_root,
+                    cec_dev="/nonexistent/cec0",
+                    open_fn=mixed_open,
+                    close_fn=lambda _fd: None,
+                    get_keycode_fn=lambda _fd, sc: 28 if sc == 0x0C0041 else None,
+                )
+            self.assertEqual(rc, 0)
+            st_out = buf_st.getvalue()
+            self.assertNotIn("EACCES", st_out)
+            self.assertNotIn("permission denied", st_out.lower())
+            self.assertIn("event7", st_out)
+            self.assertIn("event9", st_out)
+
+            # 5. --diagnose STILL surfaces EACCES on event8 in permission_audit
+            report = remote_mod.build_diagnose_report(
+                sys_input_root=sys_root,
+                dev_input_root=dev_root,
+                device_exists_fn=lambda _p: False,
+                access_fn=lambda p, _m: not p.endswith("event8"),
+            )
+            self.assertEqual(report["permission_audit"]["permission_denied_count"], 1)
+            self.assertIn(os.path.join(dev_root, "event8"), report["permission_audit"]["permission_denied_devices"])
+            self.assertIn("uaccess", report["permission_audit"]["remediation_hint"].lower())
 
 
 if __name__ == "__main__":

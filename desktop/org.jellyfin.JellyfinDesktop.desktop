@@ -2,7 +2,7 @@
 Version=1.0
 Name=Jellyfin TV
 Comment=Jellyfin Media Player (Fullscreen TV Mode)
-Exec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=jellyfin-desktop org.jellyfin.JellyfinDesktop --fullscreen --tv
+Exec=/usr/bin/flatpak run --branch=stable --command=jellyfin-desktop org.jellyfin.JellyfinDesktop --fullscreen --tv
 Icon=org.jellyfin.JellyfinDesktop
 Terminal=false
 Type=Application

@@ -6,7 +6,7 @@ Icon=com.stremio.Stremio
 Categories=AudioVideo;Video;Player;TV;
 Keywords=Stremio;Media;Play;
 Type=Application
-Exec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=stremio --file-forwarding com.stremio.Stremio @@u %u @@
+Exec=/usr/bin/flatpak run --branch=stable --command=stremio --file-forwarding com.stremio.Stremio @@u %u @@
 MimeType=x-scheme-handler/stremio;
 Terminal=false
 StartupNotify=true

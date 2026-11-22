@@ -735,12 +735,56 @@ def cmd_install_file(args: argparse.Namespace) -> int:
     )
 
 
+def resolve_steam_exec(
+    home: Path,
+    *,
+    bazzite_steam: Path = Path("/usr/bin/bazzite-steam"),
+    usr_steam: Path = Path("/usr/bin/steam"),
+    system_flatpak_app: Path = Path("/var/lib/flatpak/app/com.valvesoftware.Steam"),
+    which_fn=shutil.which,
+) -> str:
+    """Resolve the Steam launcher command across Bazzite, native distros, and Flatpak."""
+    if bazzite_steam.exists() and os.access(bazzite_steam, os.X_OK):
+        return str(bazzite_steam)
+    if usr_steam.exists() and os.access(usr_steam, os.X_OK):
+        return str(usr_steam)
+    found_steam = which_fn("steam") if which_fn else None
+    if found_steam:
+        return str(found_steam)
+    if (home / ".local/share/flatpak/app/com.valvesoftware.Steam").exists() or system_flatpak_app.exists():
+        return "/usr/bin/flatpak run com.valvesoftware.Steam"
+    return "steam"
+
+
+def resolve_haruna_desktop_path(
+    home: Path,
+    logical_home: str,
+    *,
+    system_flatpak_desktop: Path = Path("/var/lib/flatpak/exports/share/applications/org.kde.haruna.desktop"),
+    native_desktop: Path = Path("/usr/share/applications/org.kde.haruna.desktop"),
+) -> str:
+    """Resolve org.kde.haruna.desktop across user Flatpak, system Flatpak, and native packages."""
+    user_rel = ".local/share/flatpak/exports/share/applications/org.kde.haruna.desktop"
+    if (home / user_rel).exists():
+        return f"{logical_home}/{user_rel}"
+    if system_flatpak_desktop.exists():
+        return str(system_flatpak_desktop)
+    if native_desktop.exists():
+        return str(native_desktop)
+    return "/var/lib/flatpak/exports/share/applications/org.kde.haruna.desktop"
+
+
 def cmd_install_template(args: argparse.Namespace) -> int:
     home = resolve_home(args.home)
     logical_home = os.path.normpath(args.home or os.environ.get("HOME") or str(home))
     rel_posix, dst = normalize_rel_path(home, args.dst)
     src = Path(args.src)
-    rendered = src.read_text(encoding="utf-8").replace("@HOME@", logical_home).encode("utf-8")
+    text = src.read_text(encoding="utf-8").replace("@HOME@", logical_home)
+    if "@STEAM_EXEC@" in text:
+        text = text.replace("@STEAM_EXEC@", resolve_steam_exec(home))
+    if "@HARUNA_DESKTOP_PATH@" in text:
+        text = text.replace("@HARUNA_DESKTOP_PATH@", resolve_haruna_desktop_path(home, logical_home))
+    rendered = text.encode("utf-8")
     return _install_bytes(
         home=home,
         rel_posix=rel_posix,

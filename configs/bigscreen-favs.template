@@ -43,8 +43,8 @@ storageId=steam-bigpicture.desktop
 [Favs][4]
 categories=AudioVideo;Player;Video;
 comment=Video Player
-desktopPath=/var/lib/flatpak/exports/share/applications/org.kde.haruna.desktop
-entryPath=/var/lib/flatpak/exports/share/applications/org.kde.haruna.desktop
+desktopPath=@HARUNA_DESKTOP_PATH@
+entryPath=@HARUNA_DESKTOP_PATH@
 icon=org.kde.haruna
 name=Haruna
 startupNotify=true
