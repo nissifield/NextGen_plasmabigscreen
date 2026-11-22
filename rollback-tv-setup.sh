@@ -1,98 +1,195 @@
 #!/usr/bin/env bash
-set -e
+# Safe, manifest-backed rollback/uninstaller for NextGen Plasma Bigscreen
+set -euo pipefail
 
-echo "=== Rolling Back NextGen Plasma Bigscreen TV Setup ==="
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DRY_RUN=0
+SKIP_SERVICES=0
 
-# 1. Reset default boot session to Desktop
-echo "--> Restoring default login session to Desktop..."
-steamosctl set-default-login-mode desktop 2>/dev/null || true
+usage() {
+    cat <<'EOF'
+Usage: ./rollback-tv-setup.sh [OPTIONS]
 
-# 2. Remove TV display-mode daemon, KWin script, Movie Mode toggle, and shell helpers
-echo "--> Removing tv-display-mode daemon, Movie Mode toggle, KWin script, and Stremio shim..."
-systemctl --user disable --now tv-display-mode.service 2>/dev/null || true
-qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript tv-display-mode 2>/dev/null || true
-rm -f ~/.local/bin/tv-display-mode \
-      ~/.local/bin/tv-movie-mode-toggle \
-      ~/tv-display-mode.sh \
-      ~/.bashrc.d/tv-display-mode.sh \
-      ~/.config/systemd/user/tv-display-mode.service \
-      ~/.config/mpv/scripts/tv-display-mode.lua \
-      ~/.var/app/com.stremio.Stremio/data/stremio-mpv-shim.so
-rm -rf ~/.local/share/tv-display-mode ~/.config/tv-display-mode ~/.local/state/tv-display-mode
+Safely roll back NextGen Plasma Bigscreen customizations in $HOME.
+When a NextGen install manifest exists, restores pre-existing user files and
+Flatpak overrides to their exact prior state and deletes only NextGen-created
+files. Unrelated user configs, Flatpak overrides, and systemd linger are preserved.
 
-# 3. Remove desktop launchers
-echo "--> Removing TV desktop launchers..."
-rm -f ~/Desktop/YouTube-TV.desktop ~/Desktop/Stremio.desktop ~/Desktop/Jellyfin.desktop ~/Desktop/Steam-Big-Picture.desktop ~/Desktop/Plasma-Bigscreen.desktop \
-      ~/.local/share/applications/tv-movie-mode.desktop ~/.local/share/applications/plasma-bigscreen-swap.desktop ~/.local/share/applications/return-to-desktop.desktop \
-      ~/.local/share/applications/rocks.shy.VacuumTube.desktop ~/.local/share/applications/com.stremio.Stremio.desktop \
-      ~/.local/share/applications/org.jellyfin.JellyfinDesktop.desktop ~/.local/share/applications/steam-bigpicture.desktop
-if [ -f ~/.tv-setup-backups/Return.desktop ]; then
-    cp -p ~/.tv-setup-backups/Return.desktop ~/Desktop/Return.desktop
-    chmod +x ~/Desktop/Return.desktop
-fi
+Options:
+  -n, --dry-run        Preview rollback actions without modifying $HOME
+      --skip-services  Skip systemd, KWin DBus, session, and keymap runtime calls
+  -h, --help           Show this help text and exit
+EOF
+}
 
-# 4. Remove user-space Plasma Bigscreen Android TV overrides, session switcher, inputhandler service, and configs
-echo "--> Restoring standard KDE Plasma Desktop shell and removing Plasma Bigscreen user-space configs..."
-if [ -x ~/.local/bin/tv-session-switch.sh ]; then
-    ~/.local/bin/tv-session-switch.sh desktop 2>/dev/null || true
-fi
-systemctl --user disable --now plasma-bigscreen-inputhandler.service 2>/dev/null || true
-rm -rf ~/.local/share/plasma/plasmoids/org.kde.bigscreen.homescreen ~/.config/plasma-bigscreen ~/.cache/plasma-bigscreen
-rm -f ~/.config/bigscreen-favs ~/.config/applications-blacklistrc ~/.config/plasma-bigscreen-inputhandlerrc \
-      ~/.config/autostart/plasma-bigscreen-autostart.desktop ~/.config/systemd/user/plasma-bigscreen-inputhandler.service \
-      ~/.local/bin/tv-session-switch.sh
-
-# 5. Remove VA-API hardware acceleration overrides and Flatpak user overrides
-echo "--> Removing VA-API environment config and Flatpak overrides..."
-rm -f ~/.config/environment.d/90-intel-vaapi.conf \
-      ~/.var/app/rocks.shy.VacuumTube/config/VacuumTube/flags.txt \
-      ~/.var/app/org.jellyfin.JellyfinDesktop/data/jellyfin-desktop/mpv.conf
-if [ -f ~/.var/app/rocks.shy.VacuumTube/config/VacuumTube/config.json.bak ]; then
-    mv -f ~/.var/app/rocks.shy.VacuumTube/config/VacuumTube/config.json.bak \
-          ~/.var/app/rocks.shy.VacuumTube/config/VacuumTube/config.json
-fi
-for app in rocks.shy.VacuumTube org.jellyfin.JellyfinDesktop com.stremio.Stremio org.kde.haruna org.mozilla.firefox; do
-    flatpak override --user --reset "$app" 2>/dev/null || true
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--dry-run)
+            DRY_RUN=1
+            ;;
+        --skip-services)
+            SKIP_SERVICES=1
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+    shift
 done
 
-# 6. Remove defense-in-depth Gamescope overrides
-echo "--> Removing defense-in-depth Gamescope session overrides..."
-rm -f ~/.config/gamescope-session-plus/sessions.d/ogui-steam ~/.config/gamescope/modes.cfg
-
-# 7. Remove TV remote user-space keymap service and restore PowerDevil/shortcut defaults
-echo "--> Removing TV remote keymap service and restoring PowerDevil/KGlobalAccel defaults..."
-systemctl --user disable --now tv-remote-keymap.service 2>/dev/null || true
-if [ -x ~/.local/bin/tv-remote-keymap.py ]; then
-    ~/.local/bin/tv-remote-keymap.py --reset 2>/dev/null || true
+MANIFEST_TOOL=""
+if [ -f "$REPO_DIR/bin/nextgen-manifest.py" ]; then
+    MANIFEST_TOOL="$REPO_DIR/bin/nextgen-manifest.py"
+elif [ -f "$HOME/.local/bin/nextgen-manifest.py" ]; then
+    MANIFEST_TOOL="$HOME/.local/bin/nextgen-manifest.py"
 fi
-rm -f ~/.local/bin/tv-remote-keymap.py ~/.config/systemd/user/tv-remote-keymap.service
-systemctl --user daemon-reload 2>/dev/null || true
-if [ -f ~/.tv-setup-backups/powerdevilrc ]; then
-    cp -p ~/.tv-setup-backups/powerdevilrc ~/.config/powerdevilrc
+
+MANIFEST_FILE="$HOME/.local/state/nextgen-plasmabigscreen/manifest.json"
+
+run_service_cmd() {
+    if [ "$SKIP_SERVICES" -eq 1 ]; then
+        return 0
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[dry-run] %s\n' "$*"
+    else
+        "$@" 2>/dev/null || true
+    fi
+}
+
+rm_safe_file() {
+    local target="$1"
+    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+        return 0
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[dry-run] rm -f %s\n' "$target"
+    else
+        rm -f "$target"
+    fi
+}
+
+rm_safe_dir() {
+    local target="$1"
+    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+        return 0
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[dry-run] rm -rf %s\n' "$target"
+    else
+        rm -rf "$target"
+    fi
+}
+
+echo "=== Rolling Back NextGen Plasma Bigscreen TV Setup ==="
+[ "$DRY_RUN" -eq 1 ] && echo "Mode: DRY RUN (no files will be modified)"
+
+# 1. Stop runtime services & restore desktop session (skipped under --skip-services)
+if [ "$SKIP_SERVICES" -eq 0 ]; then
+    echo "--> Stopping NextGen user services and restoring desktop session..."
+    if command -v steamosctl >/dev/null 2>&1; then
+        run_service_cmd steamosctl set-default-login-mode desktop
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        run_service_cmd systemctl --user disable --now tv-display-mode.service
+        run_service_cmd systemctl --user disable --now tv-remote-keymap.service
+        run_service_cmd systemctl --user disable --now plasma-bigscreen-inputhandler.service
+    fi
+    if command -v qdbus6 >/dev/null 2>&1; then
+        run_service_cmd qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript tv-display-mode
+    fi
+    if [ -x "$HOME/.local/bin/tv-session-switch.sh" ]; then
+        run_service_cmd "$HOME/.local/bin/tv-session-switch.sh" desktop
+    fi
+    if [ -x "$HOME/.local/bin/tv-remote-keymap.py" ]; then
+        run_service_cmd "$HOME/.local/bin/tv-remote-keymap.py" --reset
+    fi
+fi
+
+# 2. Manifest-backed exact rollback OR conservative legacy rollback
+if [ -f "$MANIFEST_FILE" ]; then
+    if [ -z "$MANIFEST_TOOL" ] || ! command -v python3 >/dev/null 2>&1; then
+        echo "Error: manifest found at $MANIFEST_FILE but python3 / nextgen-manifest.py is unavailable" >&2
+        exit 1
+    fi
+    echo "--> Executing manifest-backed rollback ($MANIFEST_FILE)..."
+    RB_FLAGS=()
+    [ "$DRY_RUN" -eq 1 ] && RB_FLAGS+=(--dry-run)
+    python3 -B "$MANIFEST_TOOL" rollback "${RB_FLAGS[@]}"
 else
-    kwriteconfig6 --file powerdevilrc --group AC --group SuspendAndShutdown --key PowerButtonAction 8 2>/dev/null || true
-    kwriteconfig6 --file powerdevilrc --group AC --group SuspendAndShutdown --key PowerDownAction --delete 2>/dev/null || true
-    kwriteconfig6 --file powerdevilrc --group Battery --group SuspendAndShutdown --key PowerButtonAction 1 2>/dev/null || true
-    kwriteconfig6 --file powerdevilrc --group Battery --group SuspendAndShutdown --key PowerDownAction --delete 2>/dev/null || true
-    kwriteconfig6 --file powerdevilrc --group LowBattery --group SuspendAndShutdown --key PowerButtonAction 1 2>/dev/null || true
-    kwriteconfig6 --file powerdevilrc --group LowBattery --group SuspendAndShutdown --key PowerDownAction --delete 2>/dev/null || true
+    echo "--> No manifest found; performing conservative legacy rollback..."
+    echo "    (Preserving unrelated user configs and unrelated Flatpak overrides)"
+
+    # Remove only clearly NextGen-owned scripts, units, launchers, and artifacts
+    rm_safe_file "$HOME/.local/bin/tv-display-mode"
+    rm_safe_file "$HOME/.local/bin/tv-movie-mode-toggle"
+    rm_safe_file "$HOME/.local/bin/tv-session-switch.sh"
+    rm_safe_file "$HOME/.local/bin/tv-remote-keymap.py"
+    rm_safe_file "$HOME/.local/bin/steamos-add-to-steam"
+    rm_safe_file "$HOME/.local/bin/nextgen-manifest.py"
+    rm_safe_file "$HOME/.local/bin/nextgen_platform.py"
+    rm_safe_file "$HOME/tv-display-mode.sh"
+    rm_safe_file "$HOME/.bashrc.d/tv-display-mode.sh"
+    rm_safe_file "$HOME/.config/mpv/scripts/tv-display-mode.lua"
+    rm_safe_file "$HOME/.var/app/com.stremio.Stremio/data/stremio-mpv-shim.so"
+    rm_safe_dir "$HOME/.local/share/tv-display-mode"
+
+    rm_safe_file "$HOME/Applications/streaming_scripts/Youtube"
+    rm_safe_file "$HOME/Applications/streaming_scripts/stremio"
+    rm_safe_file "$HOME/Applications/streaming_scripts/jellyfin-media-player"
+
+    rm_safe_file "$HOME/.config/systemd/user/tv-display-mode.service"
+    rm_safe_file "$HOME/.config/systemd/user/tv-remote-keymap.service"
+    rm_safe_file "$HOME/.config/systemd/user/plasma-bigscreen-inputhandler.service"
+
+    rm_safe_file "$HOME/.local/share/applications/tv-movie-mode.desktop"
+    rm_safe_file "$HOME/.local/share/applications/plasma-bigscreen-swap.desktop"
+    rm_safe_file "$HOME/.local/share/applications/return-to-desktop.desktop"
+    rm_safe_file "$HOME/.config/autostart/plasma-bigscreen-autostart.desktop"
+
+    rm_safe_file "$HOME/.config/environment.d/90-intel-vaapi.conf"
+    rm_safe_file "$HOME/.config/wireplumber/wireplumber.conf.d/90-tv-hdmi-audio.conf"
+
+    # Strip ONLY known NextGen keys from Flatpak overrides (NEVER flatpak override --reset)
+    if [ -n "$MANIFEST_TOOL" ] && command -v python3 >/dev/null 2>&1; then
+        LEG_FLAGS=()
+        [ "$DRY_RUN" -eq 1 ] && LEG_FLAGS+=(--dry-run)
+        python3 -B "$MANIFEST_TOOL" legacy-clean-flatpak "${LEG_FLAGS[@]}"
+    fi
+
+    # Restore legacy backups if present
+    if [ -f "$HOME/.tv-setup-backups/Return.desktop" ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf '[dry-run] restore %s -> %s\n' "$HOME/.tv-setup-backups/Return.desktop" "$HOME/Desktop/Return.desktop"
+        else
+            mkdir -p "$HOME/Desktop"
+            cp -p "$HOME/.tv-setup-backups/Return.desktop" "$HOME/Desktop/Return.desktop"
+            chmod +x "$HOME/Desktop/Return.desktop"
+        fi
+    fi
+    if [ -f "$HOME/.tv-setup-backups/powerdevilrc" ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf '[dry-run] restore %s -> %s\n' "$HOME/.tv-setup-backups/powerdevilrc" "$HOME/.config/powerdevilrc"
+        else
+            mkdir -p "$HOME/.config"
+            cp -p "$HOME/.tv-setup-backups/powerdevilrc" "$HOME/.config/powerdevilrc"
+        fi
+    fi
 fi
-kwriteconfig6 --file kglobalshortcutsrc --group org_kde_powerdevil --key Sleep "Sleep,Sleep,Suspend" 2>/dev/null || true
-kwriteconfig6 --file kglobalshortcutsrc --group org_kde_powerdevil --key "Turn Off Screen" "none,none,Turn Off Screen" 2>/dev/null || true
-systemctl --user restart plasma-powerdevil.service 2>/dev/null || true
 
-# 8. Remove streaming launcher scripts and Plasma 6 steamos-add-to-steam override
-echo "--> Removing streaming scripts and user-space steamos-add-to-steam fix..."
-rm -rf ~/Applications/streaming_scripts
-rm -f ~/.local/bin/steamos-add-to-steam
+# 3. Reload user services after file changes (never touch systemd linger)
+if [ "$SKIP_SERVICES" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+    run_service_cmd systemctl --user daemon-reload
+    run_service_cmd systemctl --user restart plasma-powerdevil.service
+    run_service_cmd systemctl --user restart wireplumber
+fi
 
-# 9. Restore WirePlumber audio priority
-echo "--> Restoring WirePlumber audio rules..."
-rm -f ~/.config/wireplumber/wireplumber.conf.d/90-tv-hdmi-audio.conf
-systemctl --user restart wireplumber 2>/dev/null || true
-
-# 10. Disable lingering if desired
-loginctl disable-linger "$USER" 2>/dev/null || true
-
+echo ""
 echo "=== Rollback Complete ==="
-echo "Your user-space environment has been returned to stock defaults."
+echo "Note: User systemd linger was left unchanged (manage manually with loginctl if needed)."
