@@ -2,7 +2,7 @@
 
 > **Important:** Having an issue card on this board means **we want community help to test, research, or implement it**—it does **not** mean the distro, GPU, display mode, remote, or streaming service is currently supported or verified. Check [docs/COMPATIBILITY.md](COMPATIBILITY.md) for verified support status.
 
-Maintainers can seed these exact labels, issues, and the GitHub Project v2 board (`NextGen Compatibility & Contributions`) once authenticated with `gh auth login` using [`scripts/seed-github-board.sh`](../scripts/seed-github-board.sh) (supports `--dry-run` by default).
+Live GitHub Project board: **[NextGen Compatibility & Contributions](https://github.com/users/nissifield/projects/1)**. Maintainers can re-sync labels, issues, and project items idempotently using [`scripts/seed-github-board.sh`](../scripts/seed-github-board.sh) (supports `--dry-run` by default).
 
 ---
 
@@ -19,24 +19,24 @@ Maintainers can seed these exact labels, issues, and the GitHub Project v2 board
 
 ### Current Board Snapshot
 
-| # | Card | Column | Priority |
-| :--- | :--- | :--- | :--- |
-| 1 | [Mutable distro: Fedora KDE Spin](#1-mutable-distro-fedora-kde-spin) | Ready for contributors | `priority:P1` |
-| 2 | [Mutable distro: Ubuntu + KDE Plasma](#2-mutable-distro-ubuntu--kde-plasma) | Ready for contributors | `priority:P1` |
-| 3 | [Mutable distro: Debian KDE](#3-mutable-distro-debian-kde) | Ready for contributors | `priority:P1` |
-| 4 | [Mutable distro: Arch Linux KDE](#4-mutable-distro-arch-linux-kde) | Ready for contributors | `priority:P1` |
-| 5 | [Mutable distro: openSUSE Tumbleweed KDE](#5-mutable-distro-opensuse-tumbleweed-kde) | Ready for contributors | `priority:P1` |
-| 6 | [GPU: AMD Radeon/Mesa](#6-gpu-amd-radeonmesa) | Needs hardware validation | `priority:P0` |
-| 7 | [GPU: NVIDIA](#7-gpu-nvidia) | Needs hardware validation | `priority:P0` |
-| 8 | [GPU: Intel legacy/new](#8-gpu-intel-legacynew) | Needs hardware validation | `priority:P1` |
-| 9 | [Display: multi-monitor & connector switching](#9-display-multi-monitor--connector-switching) | Ready for contributors | `priority:P1` |
-| 10 | [Display: 4K60/120, HDR and VRR research](#10-display-4k60120-hdr-and-vrr-research) | Ready for contributors | `priority:P1` |
-| 11 | [Remote: HDMI-CEC adapters](#11-remote-hdmi-cec-adapters) | Needs hardware validation | `priority:P1` |
-| 12 | [Remote: Bluetooth/RF controllers](#12-remote-bluetoothrf-controllers) | Ready for contributors | `priority:P1` |
-| 13 | [Streaming: browser DRM compatibility](#13-streaming-browser-drm-compatibility) | Ready for contributors | `priority:P2` |
-| 14 | [Installer: transactional install and rollback](#14-installer-transactional-install-and-rollback) | Needs hardware validation | `priority:P0` |
-| 15 | [QA: hardware test matrix and CI](#15-qa-hardware-test-matrix-and-ci) | In progress | `priority:P0` |
-| 16 | [UX: accessibility and translations](#16-ux-accessibility-and-translations) | Backlog | `priority:P2` |
+| Issue | Card Spec | Column | Assignee | Priority |
+| :--- | :--- | :--- | :--- | :--- |
+| [#1](https://github.com/nissifield/NextGen_plasmabigscreen/issues/1) | [Mutable distro: Fedora KDE Spin](#1-mutable-distro-fedora-kde-spin) | Ready for contributors | — | `priority:P1` |
+| [#2](https://github.com/nissifield/NextGen_plasmabigscreen/issues/2) | [Mutable distro: Ubuntu + KDE Plasma](#2-mutable-distro-ubuntu--kde-plasma) | Ready for contributors | — | `priority:P1` |
+| [#3](https://github.com/nissifield/NextGen_plasmabigscreen/issues/3) | [Mutable distro: Debian KDE](#3-mutable-distro-debian-kde) | Ready for contributors | — | `priority:P1` |
+| [#4](https://github.com/nissifield/NextGen_plasmabigscreen/issues/4) | [Mutable distro: Arch Linux KDE](#4-mutable-distro-arch-linux-kde) | Ready for contributors | — | `priority:P1` |
+| [#5](https://github.com/nissifield/NextGen_plasmabigscreen/issues/5) | [Mutable distro: openSUSE Tumbleweed KDE](#5-mutable-distro-opensuse-tumbleweed-kde) | Ready for contributors | — | `priority:P1` |
+| [#6](https://github.com/nissifield/NextGen_plasmabigscreen/issues/6) | [GPU: AMD Radeon/Mesa](#6-gpu-amd-radeonmesa) | Needs hardware validation | — | `priority:P0` |
+| [#7](https://github.com/nissifield/NextGen_plasmabigscreen/issues/7) | [GPU: NVIDIA](#7-gpu-nvidia) | Needs hardware validation | — | `priority:P0` |
+| [#8](https://github.com/nissifield/NextGen_plasmabigscreen/issues/8) | [GPU: Intel legacy/new](#8-gpu-intel-legacynew) | Needs hardware validation | — | `priority:P1` |
+| [#9](https://github.com/nissifield/NextGen_plasmabigscreen/issues/9) | [Display: multi-monitor & connector switching](#9-display-multi-monitor--connector-switching) | Ready for contributors | — | `priority:P1` |
+| [#10](https://github.com/nissifield/NextGen_plasmabigscreen/issues/10) | [Display: 4K60/120, HDR and VRR research](#10-display-4k60120-hdr-and-vrr-research) | Ready for contributors | — | `priority:P1` |
+| [#11](https://github.com/nissifield/NextGen_plasmabigscreen/issues/11) | [Remote: HDMI-CEC adapters](#11-remote-hdmi-cec-adapters) | Needs hardware validation | — | `priority:P1` |
+| [#12](https://github.com/nissifield/NextGen_plasmabigscreen/issues/12) | [Remote: Bluetooth/RF controllers](#12-remote-bluetoothrf-controllers) | Ready for contributors | — | `priority:P1` |
+| [#13](https://github.com/nissifield/NextGen_plasmabigscreen/issues/13) | [Streaming: browser DRM compatibility](#13-streaming-browser-drm-compatibility) | Ready for contributors | — | `priority:P2` |
+| [#14](https://github.com/nissifield/NextGen_plasmabigscreen/issues/14) | [Installer: transactional install and rollback](#14-installer-transactional-install-and-rollback) | Needs hardware validation | — | `priority:P0` |
+| [#15](https://github.com/nissifield/NextGen_plasmabigscreen/issues/15) | [QA: hardware test matrix and CI](#15-qa-hardware-test-matrix-and-ci) | In progress | `@Hitesh-XS` | `priority:P0` |
+| [#16](https://github.com/nissifield/NextGen_plasmabigscreen/issues/16) | [UX: accessibility and translations](#16-ux-accessibility-and-translations) | Backlog | — | `priority:P2` |
 
 ---
 
