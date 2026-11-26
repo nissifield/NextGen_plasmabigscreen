@@ -1,0 +1,6 @@
+*.sh text eol=lf
+.github/workflows/*.yml text eol=lf
+.github/workflows/*.yaml text eol=lf
+bin/steamos-add-to-steam text eol=lf
+bin/streaming_scripts/* text eol=lf
+*.md text eol=lf

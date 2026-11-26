@@ -57,30 +57,33 @@ NextGen Plasma Bigscreen is strictly **user-space-first (`$HOME`)**, and every c
 
 ## 4. Required Verification Commands
 
-Run these checks locally before opening a Pull Request:
+Run these checks locally before opening a Pull Request. Run Linux-specific tests in a Linux environment (native Linux or WSL).
 
 ```bash
-# 1. Python unit & fixture test suite
 python3 -m unittest discover -s tests -v
 
-# 2. Python bytecode syntax check
-python3 -m py_compile bin/tv-display-mode bin/tv-movie-mode-toggle bin/tv-remote-keymap.py tests/*.py
-# (Also include bin/nextgen_platform.py and bin/nextgen-manifest.py when present)
+python3 -m compileall -q . -x '(^|/)(\.git|\.venv)/'
 
-# 3. Shell script syntax checks
-bash -n install.sh rollback-tv-setup.sh bin/tv-session-switch.sh bin/tv-display-mode.sh configs/bashrc.d/tv-display-mode.sh scripts/seed-github-board.sh
+mapfile -t sh_files < <(
+  find . -type f \
+    \( -name '*.sh' -o -path './bin/steamos-add-to-steam' -o -path './bin/streaming_scripts/*' \) \
+    -not -path './.git/*' \
+    -not -path './.venv/*' | sort
+)
+for f in "${sh_files[@]}"; do bash -n "$f"; done
+sh -n ./bin/steamos-add-to-steam
+shellcheck -S warning "${sh_files[@]}"
 
-# 4. Optional shellcheck (if installed)
-shellcheck -S warning install.sh rollback-tv-setup.sh bin/tv-session-switch.sh bin/tv-display-mode.sh scripts/seed-github-board.sh
-
-# 5. C syntax check for the Stremio libmpv shim (if gcc is installed)
 gcc -fsyntax-only -Wall -Wextra -fPIC -O2 stremio/stremio_mpv_shim.c
+gcc -Wall -Wextra -fPIC -O2 -shared -o /tmp/stremio_mpv_shim.so stremio/stremio_mpv_shim.c -ldl
+nm -D --defined-only /tmp/stremio_mpv_shim.so | grep -q ' mpv_initialize$'
 
-# 6. Desktop file validation (if desktop-file-validate is installed)
-desktop-file-validate desktop/*.desktop
+if command -v desktop-file-validate >/dev/null 2>&1; then
+  desktop-file-validate desktop/*.desktop
+fi
 ```
 
-> Note: Automated CI runs syntax, unit, fixture, C syntax, and Markdown link checks. CI does **not** run on real TV hardware—hardware behavior must still be verified and classified honestly in your PR description.
+> Note: Automated CI runs Python syntax checks, unit and fixture tests, Bash syntax checks, ShellCheck, C syntax and linking checks, and Markdown link/heading checks. CI does **not** run on real TV hardware—hardware behavior must still be verified and classified honestly in your PR description.
 
 ---
 

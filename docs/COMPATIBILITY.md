@@ -9,6 +9,17 @@ This document tracks **honest, evidence-backed compatibility** for NextGen Plasm
 
 > **Important policy on browser DRM & commercial streaming:** Working Linux VA-API hardware video decoding does **not** guarantee Full HD (1080p) or 4K playback, HDR, or HDCP handshakes on commercial DRM streaming services (such as Netflix, Disney+, or Prime Video) in Linux browsers. NextGen Plasma Bigscreen does **not** support or provide DRM circumvention.
 
+
+## Automated CI vs. Manual Hardware Validation
+
+GitHub Actions runs on a Linux software runner. It validates Python syntax and unit tests, synthetic platform fixtures, Bash syntax, ShellCheck, C syntax and linking for the Stremio shim, and internal Markdown links and heading anchors.
+
+The test suite uses synthetic or mocked inputs for multi-GPU and multi-output discovery, VA-API output, CEC adapters, remote profiles, and installation and rollback under temporary HOME directories. These tests validate parsing, decision logic, and user-space safety. They do not prove compatibility with physical GPUs, displays, HDMI-CEC devices, remotes, or any distribution.
+
+Real hardware validation remains manual. Contributors are requested to submit anonymized real-world `kscreen-doctor -j`, `vainfo`, and `cec-ctl` captures, particularly from AMD and NVIDIA systems and mutable distributions. Redact usernames, hostnames, serials, MAC addresses, tokens, private URLs, and other identifying data before submitting captures.
+
+Do not promote a platform or device from Experimental / Untested based solely on CI or synthetic fixtures. Use the manual hardware acceptance checklist below when reporting hardware compatibility.
+
 ---
 
 ## 1. Platform & Hardware Support Summary
