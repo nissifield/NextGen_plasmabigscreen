@@ -69,17 +69,17 @@ We warmly welcome contributors running **Ubuntu, Debian, Arch Linux, openSUSE Tu
 
 ### Open Contribution Cards
 
-Browse full card specifications in [docs/CONTRIBUTION_BOARD.md](docs/CONTRIBUTION_BOARD.md) or view/file issues on [GitHub Issues](https://github.com/nissifield/NextGen_plasmabigscreen/issues) ([choose an issue template](https://github.com/nissifield/NextGen_plasmabigscreen/issues/new/choose)). Having a card means **help is wanted**, not that the platform is already supported.
+Browse the live [GitHub Project Board](https://github.com/users/nissifield/projects/1), full card specifications in [docs/CONTRIBUTION_BOARD.md](docs/CONTRIBUTION_BOARD.md), or open [GitHub Issues](https://github.com/nissifield/NextGen_plasmabigscreen/issues) ([choose an issue template](https://github.com/nissifield/NextGen_plasmabigscreen/issues/new/choose)). Having a card means **help is wanted**, not that the platform is already supported.
 
-| Area | Contribution Card | Current Status | Priority |
+| Area | Live GitHub Issues | Current Status | Priority |
 | :--- | :--- | :--- | :--- |
-| Mutable Distros | [Fedora KDE Spin](docs/CONTRIBUTION_BOARD.md#1-mutable-distro-fedora-kde-spin) · [Ubuntu + KDE](docs/CONTRIBUTION_BOARD.md#2-mutable-distro-ubuntu--kde-plasma) · [Debian KDE](docs/CONTRIBUTION_BOARD.md#3-mutable-distro-debian-kde) · [Arch Linux KDE](docs/CONTRIBUTION_BOARD.md#4-mutable-distro-arch-linux-kde) · [openSUSE Tumbleweed](docs/CONTRIBUTION_BOARD.md#5-mutable-distro-opensuse-tumbleweed-kde) | Untested — Ready for contributors | `P1` |
-| GPUs | [AMD Radeon/Mesa](docs/CONTRIBUTION_BOARD.md#6-gpu-amd-radeonmesa) · [NVIDIA](docs/CONTRIBUTION_BOARD.md#7-gpu-nvidia) · [Intel legacy/new](docs/CONTRIBUTION_BOARD.md#8-gpu-intel-legacynew) | Experimental — Needs hardware validation | `P0` / `P1` |
-| Displays | [Multi-monitor & connector switching](docs/CONTRIBUTION_BOARD.md#9-display-multi-monitor--connector-switching) · [4K60/120, HDR and VRR research](docs/CONTRIBUTION_BOARD.md#10-display-4k60120-hdr-and-vrr-research) | Untested — Ready for contributors | `P1` |
-| Remotes & CEC | [HDMI-CEC adapters](docs/CONTRIBUTION_BOARD.md#11-remote-hdmi-cec-adapters) · [Bluetooth/RF controllers](docs/CONTRIBUTION_BOARD.md#12-remote-bluetoothrf-controllers) | Experimental — Needs hardware validation | `P1` |
-| Streaming & DRM | [Browser DRM compatibility](docs/CONTRIBUTION_BOARD.md#13-streaming-browser-drm-compatibility) | Unverified / Restricted — Ready for contributors | `P2` |
-| Safety & QA | [Transactional install & rollback](docs/CONTRIBUTION_BOARD.md#14-installer-transactional-install-and-rollback) · [Hardware test matrix & CI](docs/CONTRIBUTION_BOARD.md#15-qa-hardware-test-matrix-and-ci) | In progress / Needs validation | `P0` |
-| UX & Inclusion | [Accessibility and translations](docs/CONTRIBUTION_BOARD.md#16-ux-accessibility-and-translations) | Backlog — Good first issue | `P2` |
+| Mutable Distros | [#1 Fedora KDE Spin](https://github.com/nissifield/NextGen_plasmabigscreen/issues/1) · [#2 Ubuntu + KDE](https://github.com/nissifield/NextGen_plasmabigscreen/issues/2) · [#3 Debian KDE](https://github.com/nissifield/NextGen_plasmabigscreen/issues/3) · [#4 Arch Linux KDE](https://github.com/nissifield/NextGen_plasmabigscreen/issues/4) · [#5 openSUSE Tumbleweed](https://github.com/nissifield/NextGen_plasmabigscreen/issues/5) | Untested — Ready for contributors | `P1` |
+| GPUs | [#6 AMD Radeon/Mesa](https://github.com/nissifield/NextGen_plasmabigscreen/issues/6) · [#7 NVIDIA](https://github.com/nissifield/NextGen_plasmabigscreen/issues/7) · [#8 Intel legacy/new](https://github.com/nissifield/NextGen_plasmabigscreen/issues/8) | Experimental — Needs hardware validation | `P0` / `P1` |
+| Displays | [#9 Multi-monitor & connector switching](https://github.com/nissifield/NextGen_plasmabigscreen/issues/9) · [#10 4K60/120, HDR and VRR research](https://github.com/nissifield/NextGen_plasmabigscreen/issues/10) | Untested — Ready for contributors | `P1` |
+| Remotes & CEC | [#11 HDMI-CEC adapters](https://github.com/nissifield/NextGen_plasmabigscreen/issues/11) · [#12 Bluetooth/RF controllers](https://github.com/nissifield/NextGen_plasmabigscreen/issues/12) | Experimental — Needs hardware validation | `P1` |
+| Streaming & DRM | [#13 Browser DRM compatibility](https://github.com/nissifield/NextGen_plasmabigscreen/issues/13) | Unverified / Restricted — Ready for contributors | `P2` |
+| Safety & QA | [#14 Transactional install & rollback](https://github.com/nissifield/NextGen_plasmabigscreen/issues/14) · [#15 Hardware test matrix & CI](https://github.com/nissifield/NextGen_plasmabigscreen/issues/15) (assigned to `@Hitesh-XS`) | `#14` Needs validation · `#15` In progress | `P0` |
+| UX & Inclusion | [#16 Accessibility and translations](https://github.com/nissifield/NextGen_plasmabigscreen/issues/16) | Backlog — Good first issue | `P2` |
 
 ### How to Contribute (Human-First, 3 Steps)
 

@@ -39,6 +39,7 @@ def _load_script_module(mod_name: str, filename: str):
     spec = importlib.util.spec_from_loader(mod_name, loader)
     assert spec is not None
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
     loader.exec_module(mod)
     return mod
 
