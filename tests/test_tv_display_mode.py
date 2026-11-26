@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 
@@ -13,6 +14,7 @@ loader = importlib.machinery.SourceFileLoader("tv_display_mode", BIN_PATH)
 spec = importlib.util.spec_from_loader("tv_display_mode", loader)
 assert spec is not None
 mod = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = mod
 loader.exec_module(mod)
 
 
