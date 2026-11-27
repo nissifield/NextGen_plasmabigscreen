@@ -28,37 +28,50 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Shell syntax checks (bash -n)
+      - name: Install ShellCheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes shellcheck
+          fi
+
+      - name: Shell syntax checks (bash -n and sh -n)
         run: |
           set -euo pipefail
           mapfile -t sh_files < <(
-            find . -maxdepth 4 -not -path './.git/*' \
+            find . -type f \
               \( -name '*.sh' -o -path './bin/steamos-add-to-steam' -o -path './bin/streaming_scripts/*' \) \
-              -type f | sort
+              -not -path './.git/*' \
+              -not -path './.venv/*' \
+              | sort
           )
           for f in "${sh_files[@]}"; do
             echo "Checking bash -n: $f"
             bash -n "$f"
           done
+          sh -n ./bin/steamos-add-to-steam
 
-      - name: ShellCheck (if available)
+      - name: ShellCheck
         run: |
-          if command -v shellcheck >/dev/null 2>&1; then
-            mapfile -t sh_files < <(
-              find . -maxdepth 4 -not -path './.git/*' -name '*.sh' -type f | sort
-            )
-            shellcheck -S warning "${sh_files[@]}"
-          else
-            echo "shellcheck not installed on runner; skipping."
-          fi
+          set -euo pipefail
+          mapfile -t sh_files < <(
+            find . -type f \
+              \( -name '*.sh' -o -path './bin/steamos-add-to-steam' -o -path './bin/streaming_scripts/*' \) \
+              -not -path './.git/*' \
+              -not -path './.venv/*' \
+              | sort
+          )
+          shellcheck -S warning "${sh_files[@]}"
 
       - name: Python syntax check (py_compile)
         run: |
           set -euo pipefail
           mapfile -t py_files < <(
-            find . -maxdepth 4 -not -path './.git/*' \
+            find . -type f \
               \( -name '*.py' -o -path './bin/tv-display-mode' -o -path './bin/tv-movie-mode-toggle' \) \
-              -type f | sort
+              -not -path './.git/*' \
+              -not -path './.venv/*' \
+              | sort
           )
           python3 -m py_compile "${py_files[@]}"
 
@@ -66,9 +79,12 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -v
 
-      - name: C syntax check (stremio_mpv_shim.c)
+      - name: C syntax and link checks (stremio_mpv_shim.c)
         run: |
           gcc -fsyntax-only -Wall -Wextra -fPIC -O2 stremio/stremio_mpv_shim.c
+          gcc -Wall -Wextra -fPIC -O2 -shared -o /tmp/stremio_mpv_shim.so stremio/stremio_mpv_shim.c -ldl
+          nm -D --defined-only /tmp/stremio_mpv_shim.so | grep -q ' mpv_initialize$'
+          rm -f /tmp/stremio_mpv_shim.so
 
       - name: Check internal Markdown links and heading anchors
         run: |
