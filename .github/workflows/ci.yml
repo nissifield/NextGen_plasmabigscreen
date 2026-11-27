@@ -30,8 +30,10 @@ jobs:
 
       - name: Install ShellCheck
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes shellcheck
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes shellcheck
+          fi
 
       - name: Shell syntax checks (bash -n and sh -n)
         run: |
@@ -82,6 +84,7 @@ jobs:
           gcc -fsyntax-only -Wall -Wextra -fPIC -O2 stremio/stremio_mpv_shim.c
           gcc -Wall -Wextra -fPIC -O2 -shared -o /tmp/stremio_mpv_shim.so stremio/stremio_mpv_shim.c -ldl
           nm -D --defined-only /tmp/stremio_mpv_shim.so | grep -q ' mpv_initialize$'
+          rm -f /tmp/stremio_mpv_shim.so
 
       - name: Check internal Markdown links and heading anchors
         run: |

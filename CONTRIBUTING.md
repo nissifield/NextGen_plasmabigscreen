@@ -24,6 +24,7 @@ NextGen Plasma Bigscreen is strictly **user-space-first (`$HOME`)**, and every c
 1. **Start with read-only & fixture checks:**
    - Run unit tests and syntax checks in the repo without installing anything into your real `$HOME`.
    - Use mocked/fixture inputs (for example, saved `kscreen-doctor -j` JSON, `vainfo` text, `cec-ctl` output, or synthetic `/sys/class/input` trees) for unit tests.
+
 2. **Test installer and rollback in an isolated temporary `$HOME`:**
    ```bash
    TEST_HOME="$(mktemp -d)"
@@ -32,10 +33,12 @@ NextGen Plasma Bigscreen is strictly **user-space-first (`$HOME`)**, and every c
    HOME="$TEST_HOME" ./rollback-tv-setup.sh
    rm -rf "$TEST_HOME"
    ```
+
 3. **Preview before touching your live desktop:**
    - Always run `./install.sh --dry-run` before `./install.sh`.
    - Never blindly pass `--with-hardware-presets` on non-Intel/non-baseline machines.
    - Prefer testing live session/display changes in a VM, spare Linux user account, or with a verified `1920x1080@60` fallback mode and SSH access ready.
+
 4. **Never require root for user-space changes:**
    - Do not modify `/usr` or `/etc`, and never unlock `ostree` on atomic distros.
    - Any system package requirement (such as `plasma-bigscreen`) must be documented with explicit distro install and rollback commands, never executed silently by `install.sh`.
@@ -62,7 +65,14 @@ Run these checks locally before opening a Pull Request. Run Linux-specific tests
 ```bash
 python3 -m unittest discover -s tests -v
 
-python3 -m compileall -q . -x '(^|/)(\.git|\.venv)/'
+mapfile -t py_files < <(
+  find . -type f \
+    \( -name '*.py' -o -path './bin/tv-display-mode' -o -path './bin/tv-movie-mode-toggle' \) \
+    -not -path './.git/*' \
+    -not -path './.venv/*' \
+    | sort
+)
+python3 -m py_compile "${py_files[@]}"
 
 mapfile -t sh_files < <(
   find . -type f \
@@ -77,6 +87,7 @@ shellcheck -S warning "${sh_files[@]}"
 gcc -fsyntax-only -Wall -Wextra -fPIC -O2 stremio/stremio_mpv_shim.c
 gcc -Wall -Wextra -fPIC -O2 -shared -o /tmp/stremio_mpv_shim.so stremio/stremio_mpv_shim.c -ldl
 nm -D --defined-only /tmp/stremio_mpv_shim.so | grep -q ' mpv_initialize$'
+rm -f /tmp/stremio_mpv_shim.so
 
 if command -v desktop-file-validate >/dev/null 2>&1; then
   desktop-file-validate desktop/*.desktop
@@ -98,6 +109,7 @@ fi
 ## 6. Pull Request Checklist
 
 Before submitting your PR (using [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md)):
+
 - [ ] Linked to a GitHub issue (or clearly describes the scoped problem/hardware report).
 - [ ] Keeps changes focused, reversible, and inside `$HOME` user-space boundaries.
 - [ ] Includes unit/fixture tests for new logic and passes all local checks above.
