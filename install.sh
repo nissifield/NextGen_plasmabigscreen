@@ -181,9 +181,11 @@ elif [ -f "$REPO_DIR/configs/remote-profiles.json" ]; then
     install_file "$REPO_DIR/configs/remote-profiles.json" "$HOME/.config/tv-display-mode/remote-profiles.json" 0644 --preserve-user-edits --keep-existing
 fi
 
-# 3. Stremio libmpv VA-API shim & configs
+# 3. Stremio, Jellyfin Desktop & mpv VA-API / hardware codec configs
 install_file "$REPO_DIR/stremio/stremio_mpv_shim.c" "$HOME/.local/share/tv-display-mode/stremio/stremio_mpv_shim.c" 0644
 install_file "$REPO_DIR/stremio/mpv.conf" "$HOME/.var/app/com.stremio.Stremio/config/mpv/mpv.conf" 0644 --preserve-user-edits
+install_file "$REPO_DIR/stremio/mpv.conf" "$HOME/.var/app/org.jellyfin.JellyfinDesktop/data/jellyfin-desktop/mpv.conf" 0644 --preserve-user-edits
+install_file "$REPO_DIR/stremio/mpv.conf" "$HOME/.config/mpv/mpv.conf" 0644 --preserve-user-edits
 
 SHIM_SO="$HOME/.var/app/com.stremio.Stremio/data/stremio-mpv-shim.so"
 SHIM_READY=0
