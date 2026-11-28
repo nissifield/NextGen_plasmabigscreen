@@ -692,6 +692,147 @@ class TestInstallerSafety(unittest.TestCase):
             str(fake_sys_haruna),
         )
 
+    # (l) PR #19 rollback & retire-file safety: no ytdl-format in stremio/mpv.conf, clean upgrade retirement
+    def test_l_retire_pr19_mpv_configs_and_preserve_user_edits(self) -> None:
+        # 1. stremio/mpv.conf must not use Lua/yt-dlp-dependent options unsupported by Stremio's libmpv
+        stremio_mpv_src = (REPO_ROOT / "stremio/mpv.conf").read_text(encoding="utf-8")
+        self.assertNotIn("ytdl-format", stremio_mpv_src)
+        self.assertIn("hwdec=auto-safe", stremio_mpv_src)
+        self.assertIn("hwdec-codecs=all", stremio_mpv_src)
+
+        pr19_content = (
+            "hwdec=auto-safe\n"
+            "hwdec-codecs=all\n"
+            "# Prefer hardware-accelerated VP9/HEVC/H.264 over software-decoded AV1 on remote streams\n"
+            "ytdl-format=bestvideo[vcodec!^=av01]+bestaudio/best\n"
+        )
+        pr19_bytes = pr19_content.encode("utf-8")
+        pr19_sha = manifest_mod.sha256_bytes(pr19_bytes)
+
+        # 2. Subtest A: Upgrade from PR #19 state cleanly retires unedited nextgen_created files & restores Stremio mpv.conf
+        with self.subTest(case="retire_unedited_pr19_files"):
+            sub_home = Path(self._tmp.name) / "home-retire-unedited"
+            sub_home.mkdir(parents=True, exist_ok=True)
+            self.home = sub_home
+
+            r1 = self._run_install("--gpu", "intel-ihd")
+            self.assertEqual(r1.returncode, 0, msg=r1.stderr + "\n" + r1.stdout)
+
+            # Simulate PR #19 deployment state on disk and in manifest
+            stremio_mpv = self.home / ".var/app/com.stremio.Stremio/config/mpv/mpv.conf"
+            jellyfin_mpv = self.home / ".var/app/org.jellyfin.JellyfinDesktop/data/jellyfin-desktop/mpv.conf"
+            host_mpv = self.home / ".config/mpv/mpv.conf"
+            for p in (stremio_mpv, jellyfin_mpv, host_mpv):
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(pr19_bytes)
+
+            manifest = self._read_manifest()
+            manifest["entries"][".var/app/com.stremio.Stremio/config/mpv/mpv.conf"]["installed_sha256"] = pr19_sha
+            for rel in (
+                ".var/app/org.jellyfin.JellyfinDesktop/data/jellyfin-desktop/mpv.conf",
+                ".config/mpv/mpv.conf",
+            ):
+                manifest["entries"][rel] = {
+                    "type": "file",
+                    "ownership": "nextgen_created",
+                    "installed_sha256": pr19_sha,
+                    "mode": "0644",
+                    "backup_path": None,
+                    "preserve_user_edits": True,
+                    "updated_at": "2026-11-27T10:49:37Z",
+                }
+            self._manifest_path().write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+            # --dry-run must leave HOME completely untouched
+            before_dry = snapshot_tree(self.home)
+            r_dry = self._run_install("--dry-run", "--gpu", "intel-ihd")
+            self.assertEqual(r_dry.returncode, 0, msg=r_dry.stderr + "\n" + r_dry.stdout)
+            self.assertEqual(snapshot_tree(self.home), before_dry)
+            self.assertIn("[dry-run] retire NextGen-created file", r_dry.stdout)
+
+            # Real upgrade removes the two retired files, cleans manifest entries, and downgrades Stremio mpv.conf
+            r_up = self._run_install("--gpu", "intel-ihd")
+            self.assertEqual(r_up.returncode, 0, msg=r_up.stderr + "\n" + r_up.stdout)
+            self.assertFalse(jellyfin_mpv.exists())
+            self.assertFalse(host_mpv.exists())
+            self.assertEqual(stremio_mpv.read_text(encoding="utf-8"), stremio_mpv_src)
+
+            updated_manifest = self._read_manifest()
+            self.assertNotIn(".var/app/org.jellyfin.JellyfinDesktop/data/jellyfin-desktop/mpv.conf", updated_manifest["entries"])
+            self.assertNotIn(".config/mpv/mpv.conf", updated_manifest["entries"])
+
+        # 3. Subtest B: Pre-existing untracked OR user-edited ~/.config/mpv/mpv.conf is NEVER deleted
+        with self.subTest(case="preserve_untracked_and_user_edited"):
+            sub_home = Path(self._tmp.name) / "home-retire-preserve"
+            sub_home.mkdir(parents=True, exist_ok=True)
+            self.home = sub_home
+
+            host_mpv = self.home / ".config/mpv/mpv.conf"
+            host_mpv.parent.mkdir(parents=True, exist_ok=True)
+            user_custom = "# User's own mpv config\nvo=gpu-next\n"
+            host_mpv.write_text(user_custom, encoding="utf-8")
+
+            r1 = self._run_install("--gpu", "amd")
+            self.assertEqual(r1.returncode, 0, msg=r1.stderr + "\n" + r1.stdout)
+            self.assertEqual(host_mpv.read_text(encoding="utf-8"), user_custom)
+            self.assertNotIn(".config/mpv/mpv.conf", self._read_manifest()["entries"])
+
+            # Now simulate a tracked nextgen_created file that the user subsequently edited
+            manifest = self._read_manifest()
+            manifest["entries"][".config/mpv/mpv.conf"] = {
+                "type": "file",
+                "ownership": "nextgen_created",
+                "installed_sha256": pr19_sha,
+                "mode": "0644",
+                "backup_path": None,
+                "preserve_user_edits": True,
+                "updated_at": "2026-11-27T10:49:37Z",
+            }
+            self._manifest_path().write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+            r2 = self._run_install("--gpu", "amd")
+            self.assertEqual(r2.returncode, 0, msg=r2.stderr + "\n" + r2.stdout)
+            self.assertEqual(host_mpv.read_text(encoding="utf-8"), user_custom)
+            self.assertIn("Preserving user-edited retired config", r2.stdout)
+            self.assertNotIn(".config/mpv/mpv.conf", self._read_manifest()["entries"])
+
+        # 4. Subtest C: Retired user_modified file restores its original pre-install backup
+        with self.subTest(case="restore_user_modified_backup"):
+            sub_home = Path(self._tmp.name) / "home-retire-restore-backup"
+            sub_home.mkdir(parents=True, exist_ok=True)
+            self.home = sub_home
+
+            r1 = self._run_install("--gpu", "amd")
+            self.assertEqual(r1.returncode, 0, msg=r1.stderr + "\n" + r1.stdout)
+
+            host_mpv = self.home / ".config/mpv/mpv.conf"
+            host_mpv.parent.mkdir(parents=True, exist_ok=True)
+            host_mpv.write_bytes(pr19_bytes)
+
+            orig_content = "# Original pre-NextGen user mpv.conf\nprofile=high-quality\n"
+            state_dir = self.home / ".local/state/nextgen-plasmabigscreen"
+            backup_rel = "backups/20261127T000000Z/.config/mpv/mpv.conf"
+            backup_file = state_dir / backup_rel
+            backup_file.parent.mkdir(parents=True, exist_ok=True)
+            backup_file.write_text(orig_content, encoding="utf-8")
+
+            manifest = self._read_manifest()
+            manifest["entries"][".config/mpv/mpv.conf"] = {
+                "type": "file",
+                "ownership": "user_modified",
+                "installed_sha256": pr19_sha,
+                "mode": "0644",
+                "backup_path": backup_rel,
+                "preserve_user_edits": True,
+                "updated_at": "2026-11-27T10:49:37Z",
+            }
+            self._manifest_path().write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+            r2 = self._run_install("--gpu", "amd")
+            self.assertEqual(r2.returncode, 0, msg=r2.stderr + "\n" + r2.stdout)
+            self.assertEqual(host_mpv.read_text(encoding="utf-8"), orig_content)
+            self.assertNotIn(".config/mpv/mpv.conf", self._read_manifest()["entries"])
+
 
 if __name__ == "__main__":
     unittest.main()

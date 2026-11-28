@@ -1063,6 +1063,132 @@ def _prune_safe_empty_dirs(home: Path, path: Path) -> None:
         cur = cur.parent
 
 
+def _restore_from_backup(backup_full: Path, dst: Path) -> None:
+    if backup_full.is_dir() and not backup_full.is_symlink():
+        _atomic_replace_dir(backup_full, dst)
+    elif backup_full.is_symlink():
+        if dst.exists() or dst.is_symlink():
+            if dst.is_dir() and not dst.is_symlink():
+                shutil.rmtree(dst)
+            else:
+                dst.unlink()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(os.readlink(backup_full), dst)
+    else:
+        if dst.is_dir() and not dst.is_symlink():
+            shutil.rmtree(dst)
+        mode = stat.S_IMODE(backup_full.stat().st_mode)
+        atomic_write_bytes(dst, backup_full.read_bytes(), mode=mode)
+
+
+def cmd_retire_file(args: argparse.Namespace) -> int:
+    """Cleanly remove or restore a previously manifest-tracked file no longer installed."""
+    home = resolve_home(args.home)
+    rel_posix, dst = normalize_rel_path(home, args.dst)
+    dry_run = args.dry_run
+    force = args.force
+    manifest = load_manifest(home)
+
+    if manifest is None or manifest.get("status") == "rolled_back":
+        return 0
+
+    entries: dict[str, Any] = manifest.get("entries", {})
+    if rel_posix not in entries:
+        return 0
+
+    entry = entries[rel_posix]
+    ownership = entry.get("ownership", "nextgen_created")
+    prev_sha = entry.get("installed_sha256")
+    backup_rel = entry.get("backup_path")
+    state_root = state_dir_for(home)
+    exists = dst.exists() or dst.is_symlink()
+
+    if ownership == "user_preserved":
+        msg = f"Untracking retired pre-existing user file (leaving untouched): {dst}"
+        print(f"[dry-run] {msg}" if dry_run else msg)
+        if not dry_run:
+            del entries[rel_posix]
+            save_manifest(home, manifest, dry_run=False)
+        return 0
+
+    user_edited = (
+        exists
+        and dst.is_file()
+        and not dst.is_symlink()
+        and prev_sha is not None
+        and sha256_file(dst) != prev_sha
+    )
+
+    if ownership == "user_modified":
+        if user_edited and not force:
+            msg = f"Preserving user-edited retired config {dst} (untracking without overwrite)"
+            print(f"[dry-run] {msg}" if dry_run else msg)
+            if not dry_run:
+                del entries[rel_posix]
+                save_manifest(home, manifest, dry_run=False)
+            return 0
+        backup_full = (state_root / backup_rel) if backup_rel else None
+        if backup_full is not None and (backup_full.exists() or backup_full.is_symlink()):
+            if user_edited and force:
+                bpath = backup_existing_path(home, manifest, rel_posix, dst, dry_run)
+                if dry_run:
+                    print(f"[dry-run] backup edited retired {dst} -> {state_root / bpath}")
+                else:
+                    print(f"Backed up user-edited retired {dst} -> {state_root / bpath}")
+            if dry_run:
+                print(f"[dry-run] retire {dst}: restore original from {backup_full}")
+                return 0
+            _restore_from_backup(backup_full, dst)
+            del entries[rel_posix]
+            save_manifest(home, manifest, dry_run=False)
+            print(f"Retired {dst} (restored original from {backup_full})")
+            return 0
+        msg = f"Warning: backup missing for retired user-modified {dst}; leaving file intact and untracking"
+        print(f"[dry-run] {msg}" if dry_run else msg)
+        if not dry_run:
+            del entries[rel_posix]
+            save_manifest(home, manifest, dry_run=False)
+        return 0
+
+    # ownership == "nextgen_created"
+    if not exists:
+        if dry_run:
+            print(f"[dry-run] untrack missing retired file {dst}")
+        else:
+            del entries[rel_posix]
+            save_manifest(home, manifest, dry_run=False)
+        return 0
+
+    if user_edited and not force:
+        msg = f"Preserving user-edited retired config {dst} (differs from installed version; untracking without removal)"
+        print(f"[dry-run] {msg}" if dry_run else msg)
+        if not dry_run:
+            del entries[rel_posix]
+            save_manifest(home, manifest, dry_run=False)
+        return 0
+
+    if user_edited and force:
+        bpath = backup_existing_path(home, manifest, rel_posix, dst, dry_run)
+        if dry_run:
+            print(f"[dry-run] backup edited retired {dst} -> {state_root / bpath}")
+        else:
+            print(f"Backed up user-edited retired {dst} -> {state_root / bpath}")
+
+    if dry_run:
+        print(f"[dry-run] retire NextGen-created file {dst}")
+        return 0
+
+    if dst.is_dir() and not dst.is_symlink():
+        shutil.rmtree(dst)
+    else:
+        dst.unlink(missing_ok=True)
+    _prune_safe_empty_dirs(home, dst)
+    del entries[rel_posix]
+    save_manifest(home, manifest, dry_run=False)
+    print(f"Retired NextGen-created file {dst}")
+    return 0
+
+
 def cmd_rollback(args: argparse.Namespace) -> int:
     home = resolve_home(args.home)
     dry_run = args.dry_run
@@ -1139,26 +1265,12 @@ def cmd_rollback(args: argparse.Namespace) -> int:
             continue
 
         if ownership == "user_modified":
-            if backup_rel and (state_root / backup_rel).exists():
+            if backup_rel and ((state_root / backup_rel).exists() or (state_root / backup_rel).is_symlink()):
                 backup_full = state_root / backup_rel
                 if dry_run:
                     print(f"[dry-run] restore {dst} from {backup_full}")
                     continue
-                if backup_full.is_dir() and not backup_full.is_symlink():
-                    _atomic_replace_dir(backup_full, dst)
-                elif backup_full.is_symlink():
-                    if dst.exists() or dst.is_symlink():
-                        if dst.is_dir() and not dst.is_symlink():
-                            shutil.rmtree(dst)
-                        else:
-                            dst.unlink()
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    os.symlink(os.readlink(backup_full), dst)
-                else:
-                    if dst.is_dir() and not dst.is_symlink():
-                        shutil.rmtree(dst)
-                    mode = stat.S_IMODE(backup_full.stat().st_mode)
-                    atomic_write_bytes(dst, backup_full.read_bytes(), mode=mode)
+                _restore_from_backup(backup_full, dst)
                 print(f"Restored pre-existing {dst} from {backup_full}")
             else:
                 msg = f"Warning: backup missing for user-modified {dst}; leaving current file intact"
@@ -1337,6 +1449,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_dir.add_argument("--src", required=True)
     p_dir.add_argument("--dst", required=True)
     p_dir.set_defaults(func=cmd_install_dir)
+
+    p_retire = sub.add_parser("retire-file", parents=[common], help="Safely remove or restore a retired manifest-tracked file")
+    p_retire.add_argument("--dst", required=True)
+    p_retire.add_argument("--force", action="store_true")
+    p_retire.set_defaults(func=cmd_retire_file)
 
     p_fp = sub.add_parser("patch-flatpak-override", parents=[common], help="INI-safe Flatpak override patching")
     p_fp.add_argument("--app-id", required=True)
