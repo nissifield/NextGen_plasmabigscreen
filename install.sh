@@ -137,6 +137,14 @@ install_template() {
     manifest_cmd install-template --src "$src" --dst "$dst" --mode "$mode" "${flags[@]}" "$@"
 }
 
+retire_file() {
+    local dst="$1"
+    shift || true
+    local flags=()
+    [ "$FORCE_CONFIGS" -eq 1 ] && flags+=(--force)
+    manifest_cmd retire-file --dst "$dst" "${flags[@]}" "$@"
+}
+
 echo "=== NextGen Plasma Bigscreen User-Space Installer ==="
 echo "Repository: $REPO_DIR"
 echo "Target HOME: $HOME"
@@ -181,11 +189,13 @@ elif [ -f "$REPO_DIR/configs/remote-profiles.json" ]; then
     install_file "$REPO_DIR/configs/remote-profiles.json" "$HOME/.config/tv-display-mode/remote-profiles.json" 0644 --preserve-user-edits --keep-existing
 fi
 
-# 3. Stremio, Jellyfin Desktop & mpv VA-API / hardware codec configs
+# 3. Stremio libmpv VA-API shim & configs
 install_file "$REPO_DIR/stremio/stremio_mpv_shim.c" "$HOME/.local/share/tv-display-mode/stremio/stremio_mpv_shim.c" 0644
 install_file "$REPO_DIR/stremio/mpv.conf" "$HOME/.var/app/com.stremio.Stremio/config/mpv/mpv.conf" 0644 --preserve-user-edits
-install_file "$REPO_DIR/stremio/mpv.conf" "$HOME/.var/app/org.jellyfin.JellyfinDesktop/data/jellyfin-desktop/mpv.conf" 0644 --preserve-user-edits
-install_file "$REPO_DIR/stremio/mpv.conf" "$HOME/.config/mpv/mpv.conf" 0644 --preserve-user-edits
+# Cleanly retire obsolete mpv.conf targets installed by PR #19 (only if manifest-tracked & unedited;
+# host ~/.config/mpv is mounted read-only over Stremio's xdg-config/mpv inside Flatpak).
+retire_file "$HOME/.var/app/org.jellyfin.JellyfinDesktop/data/jellyfin-desktop/mpv.conf"
+retire_file "$HOME/.config/mpv/mpv.conf"
 
 SHIM_SO="$HOME/.var/app/com.stremio.Stremio/data/stremio-mpv-shim.so"
 SHIM_READY=0
